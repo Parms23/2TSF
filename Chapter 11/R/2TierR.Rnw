@@ -1,0 +1,797 @@
+\documentclass[12pt,fleqn,reqno]{amsart}
+\usepackage{setspace,graphicx,srcltx,enumitem,subfigure}
+\usepackage[foot]{amsaddr}
+\usepackage[figuresleft]{rotating}
+\usepackage{hyperref,harvard}
+\usepackage[utf8x]{inputenc}
+\usepackage{bm}
+\usepackage{dcolumn}
+
+\newcommand{\field}[1]{\mathbb{#1}}
+\newcommand{\R}{\field{R}}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{assumption}{Assumption}[section]
+\newtheorem{lemma}{Lemma}[section]
+\setlength{\topmargin}{-0.25in} \setlength{\textheight}{8.5in}
+\setlength{\oddsidemargin}{.0in} \setlength{\evensidemargin}{.0in}
+\setlength{\textwidth}{6.5in} \setlength{\footskip}{.5in}
+
+%\SweaveOpts{keep.source=TRUE}
+
+%\keywords{Gradient Estimation, Kernel Smoothing, Least Squares Cross Validation.}
+\onehalfspacing
+\thanks{Christopher F. Parmeter, Department of Economics, University of Miami; e-mail: cparmeter@bus.miami.edu.}
+
+\begin{document}
+
+\title[]{The Two Tier Stochastic Frontier in R}
+
+\author{Christopher F. Parmeter}
+\address{University of Miami}
+\date{\today }
+
+\maketitle
+
+\section{Basic Implementation}
+
+Here we will discuss implementing many of the core aspects of the 2TSF model, illustrating the writing of the likelihood function, calculation of the metrics, and conducting inference between the Normal-Exponential and Normal-Half Normal 2TSF. We begin by writing a function in {\tt R} that will calculate the individual likelihood vales. 
+
+First we consider the Normal-Exponential 2TSF likelihood. Our base for this is the {\tt function()} command, which is quite accommodating. As it turns out for the majority of optimizers in {\tt R}, the first element in your function \textbf{must} be the parameter vector over which you will optimize. 
+
+<<likelihood_ne, eval=TRUE, echo=TRUE, results='hide'>>=
+twotier.ne <- function(p, y, xx){
+
+  nr  <- ncol(xx) ## Calculate number of regressors in regression
+
+  sigv <- p[nr+1] ## Assume homoskedastic two sided component
+  sigw <- p[nr+2]
+  sigu <- p[nr+3]
+
+  if (sigv<= 1e-6){stop("Variance too small")}
+
+  ## Construct residuals
+  e <- y - xx%*%p[1:nr]
+  
+  a1 <- e/sigu + (sigv^2)/(2*sigu^2) 
+  b1 <- -e/sigv - sigv/sigu          
+
+  a2 <- (sigv^2)/(2*sigw^2) - e/sigw 
+  b2 <- e/sigv - sigv/sigw           
+
+  ## Calculate individual likelihood values
+  ll <- -log(sigw+sigu)+log(pnorm(b2)*exp(a2)+pnorm(b1)*exp(a1))
+
+  ## return will send the individual likelihood values
+  return(ll)
+
+}
+@
+
+A few notes about the construction of this function. Aside from the parameter vector ({\tt p}), we are also including the dependent variable ({\tt y}) and the vector of covariates that form the regression function ({\tt xx}). The way that we are constructing the likelihood function is with the knowledge that the first {\tt nr} elements of {\tt p} refer to the regression specification and the remaining elements are allocated to the three variance components.\footnote{Note that we could have used the exponential transformation to construct the variances. In essence, this would allow us to avoid implementing constrained optimization and guarantee that our variance parameters will be non-negative. One downside of this is that when we report estimates of our variances, if we wish to include standard errors then we would need to invoke the Delta method since the parameters we are optimizing over are not the parameters we are interested in.}
+
+After all of the parameters have been defined we simply construct the terms as listed in Chapter 7 and then create the vector of log-likelihoods. We could also sum these values up to obtain the full log-likelihood, but to conduct the \citeasnoun{Vuong:1989LRselection} test we need the individual values. 
+
+We now repeat this for the Normal-Half Normal 2TSF likelihood. One additional thing that we need to do to construct the log-likelihood function is to access the {\tt VGAM} library \cite{VGAM} so that we can quickly and efficiently call the bivariate standard Normal distribution function ({\tt pbinorm()}). 
+
+<<likelihood_hn, eval=TRUE, echo=TRUE, results='hide'>>=
+suppressMessages(library(VGAM))
+
+twotier.hn <- function(p, y, xx){
+
+  nr  <- ncol(xx) ## Calculate number of regressors in regression
+  
+  sigv <- p[nr+1] ## Assume homoskedastic two sided component
+  sigw <- p[nr+2]
+  sigu <- p[nr+3]
+
+  if (sigv<= 1e-6){stop("Variance too small")}
+    
+  ## Calculate reparameterizations
+  theta1  <- sigw/sigv
+  theta2  <- sigu/sigv
+  s       <- sqrt(sigv^2+sigw^2+sigu^2)
+  omega1  <- s*sqrt(1+theta2^2)/theta1
+  omega2  <- s*sqrt(1+theta1^2)/theta2
+  lambda1 <- (theta2/theta1)*sqrt(1+theta1^2+theta2^2)
+  lambda2 <- (theta1/theta2)*sqrt(1+theta1^2+theta2^2)
+
+  ## Construct residuals
+  e <- y - xx%*%p[1:nr]
+  
+  D <- pbinorm(e/omega1, 0, cov12=lambda1/sqrt(1+lambda1^2))-
+	      pbinorm(e/omega2, 0, cov12=-lambda2/sqrt(1+lambda2^2))
+
+  ## Calculate individual likelihood values
+  ll <- log(2*sqrt(2)/sqrt(pi))-log(s)-e^2/(2*s^2)+log(D)
+  
+  ## Return individual likelihood values
+  return(ll)
+    	
+}
+@
+
+Notice that the structure of the function is identical. We input the parameter vector first, followed by the other pieces of information. Next we construct the relevant pieces for the likelihood function and then we calculate the likelihood values and return them. As a sidenote, the call to {\tt pbinorm} contains the entry {\tt cov12} whereas we have used $\rho$, the correlation coefficient. {\tt pbinorm} is for a Standard Bivariate Normal distribution so the variance parameters are both equal to 1, making {\tt cov12} interpretable as a correlation coefficient.
+
+To see how to put this in action lets consider the incomplete information example in Chapter 3 that involved estimating a hedonic model using data from the listing service in Windsor, Ontario, Canada. This dataset, as was previously stated, is freely available in {\tt R} through the {\tt AER} package \cite{AER} and was originally studied in \citeasnoun{ANGLIN_GENCAY:1996}. 
+
+<<Setup Data, eval=TRUE, echo=TRUE, results='hide'>>=
+## Load AER library
+suppressMessages(library(AER))
+
+## Load in data
+data("HousePrices")
+
+suppressMessages(attach(HousePrices))
+
+## Set up variables as needed
+## dependent variable
+y <- log(price)
+
+## independent variables
+llot <- log(lotsize)
+lbd  <- bedrooms
+lsty <- stories
+lfb  <- bathrooms
+
+## Now convert factors to {0,1}
+drv  <- ifelse(driveway=="yes", 1, 0)
+rec  <- ifelse(recreation=="yes", 1, 0)
+ffin <- ifelse(fullbase=="yes", 1, 0)
+ghw  <- ifelse(gasheat=="yes", 1, 0)
+ca   <- ifelse(aircon=="yes", 1, 0)
+reg  <- ifelse(prefer=="yes", 1, 0)
+
+## Garage places is a pure count
+gar <- garage
+
+## Now put everything together
+xx <- cbind(1, drv, rec, ffin, ghw, ca, 
+            gar, reg, llot, lbd, lfb, lsty)
+@
+
+Here we have loaded in the data and reconfigured all of the variables so that they appear as needed prior to maximization of the likelihood function. Now we estimate our two different 2TSF likelihood functions. For this example we are optimizing using the Nelder-Mead simplex method, which is a non-gradient based method. {\tt maxLik} offers a range of optimizers and we caution users that they should use a variety of starting values and optimization methods to ensure that their estimates can be classified as a global optima. Our work here is purely for pedagogical purposes. We also note that our starting values were found by repeated invocation of optimization (multistarts) and used here simply as an illustration.
+
+<<Estimate MLE, eval=TRUE, echo=TRUE, results='hide', cache=TRUE>>=
+## Load maxLik package
+suppressMessages(library(maxLik))
+
+## Construct A and B matrices to impose variance constraints
+## We have a total of 15 parameters, 3 of which have lower bounds
+A <- matrix(0, 3, 15)
+B <- matrix(0, 3, 1)
+
+A[1, 13] <- 1
+A[2, 14] <- 1
+A[3, 15] <- 1
+
+## Starting parameter vectors for optimization
+p.start.ne  <- c(8.22776379, 0.12584321, 0.05928428, 0.10201268, 
+                 0.16453450, 0.16135696, 0.04976582, 0.12769348, 
+                 0.24858275, 0.03091735, 0.16894982, 0.09524657,
+                 0.11188304, 0.10960680, 0.14151329)
+
+p.start.hn <- c(8.11413483, 0.14204995, 0.04975210, 0.10058137, 
+                0.16038626, 0.16518561, 0.04948550, 0.12470841, 
+                0.25554172, 0.04944552, 0.19352065, 0.07941103,
+                0.06192610, 0.20287579, 0.26141331)
+
+## Estimate both NE and HN 2TSF models
+opt.ml.ne <- maxLik(twotier.ne, grad=NULL, hess=NULL, 
+                    method="nm", control=list(iterlim=20000), 
+                    constraints=list(ineqA=A, ineqB=B),
+                    start=p.start.ne, y=y, xx=xx)
+
+opt.ml.hn <- maxLik(twotier.hn, grad=NULL, hess=NULL, 
+                    method="nm", control=list(iterlim=20000), 
+                    constraints=list(ineqA=A, ineqB=B),
+                    start=p.start.hn, y=y, xx=xx)
+@
+
+We can use the {\tt summary()} command to print out to the screen the coefficient estimates and standard errors for each of the two models. Table \ref{tab:2TSF_ex} presents the maximum likelihood estimates and corresponding standard errors, along with estimates from OLS.
+
+<<stargazer2,eval=FALSE,echo=FALSE,results='asis'>>=
+suppressMessages(library(stargazer))
+
+zu <- as.matrix(xx[, 1])
+zw <- as.matrix(xx[, 1])
+
+ols    <- lm(y~xx+zu+zw+zu:zw-1)
+ols.ne <- ols
+ols.hn <- ols
+
+## Tabulate standard errors
+se.ne  <- sqrt(diag(vcov(opt.ml.ne)))
+se.hn  <- sqrt(diag(vcov(opt.ml.hn)))
+se.ols <- sqrt(diag(vcov(ols)))
+
+## Assign sigma_v to 13th element
+ols$coefficients[13] <- sqrt(var(residuals(ols)))
+
+stargazer(list(ols, ols.ne, ols.hn),
+          coef=list(coefficients(ols), 
+                    coefficients(opt.ml.ne), 
+                    coefficients(opt.ml.hn)), 
+          se=list(se.ols, se.ne, se.hn),
+          label="tab:2TSF_ex",
+          covariate.labels = c("(Intercept)", "drv", "rec", "ffin",
+                               "ghw", "ca", "gar", "reg", "$\\ln$ lot",
+                               "bd", "fb", "sty", "$\\sigma_v$", 
+                               "$\\sigma_w$", "$\\sigma_u$"),
+          star.cutoffs = c(0),
+          out = "2TSF_ex.tex",
+          no.space=T, digits=3, single.row=F,
+          omit.stat = c("rsq","adj.rsq", "f", "n", "ser"),
+          intercept.bottom=FALSE,
+          dep.var.labels.include = FALSE,
+          title="2 Tier Stochastic Frontier Estimates",
+          column.labels=c("OLS", "Normal-Exponential", "Normal-Half Normal")
+          )
+@
+\input 2TSF_ex_USE.tex
+
+We see little difference in the parameter estimates between the two specifications. This is not surprising as it is commonly the case in the single tier frontier literature as well. Recall from Chapter 7 that we cannot directly compare $\sigma_w$ and $\sigma_u$ across the two specifications since they do not have the same meaning. One interesting feature between the two specifications is the size difference in $\sigma_v$. For the Normal-Half Normal specification we see that the two-sided error variance in the composite error is almost half what it is for the Normal-Exponential setting. It is also interesting to note that the composite error standard deviation is nearly 50\% larger in the Normal-Half Normal specification then in either OLS or the Normal-Exponential specification.
+
+Next, we move on to the \citeasnoun{Vuong:1989LRselection} test of specification between the two specifications. The discussion in Chapter 7 suggests that as the Vuong test statistic diverges to $\pm\infty$, we favor one distribution over the other. 
+ 
+<<Vuong 1989 Test, eval=TRUE, echo=TRUE, results='verbatim', cache=TRUE>>=
+## Need sample size
+n <- dim(HousePrices)[1]
+
+## Calculate Vuong (1989) test between NE and NHN 2TSF models
+li.NE <- twotier.ne(coefficients(opt.ml.ne), y, xx)
+li.HN <- twotier.hn(coefficients(opt.ml.hn), y, xx)
+
+## Difference of likelihood contributions
+li.diff <- li.NE-li.HN
+
+LRn         <- sum(li.diff)
+omegahat2.n <- mean(li.diff^2)-mean(li.diff)^2
+
+## Calculate Vuong statistic
+Tn <- sqrt(1/n)*LRn/sqrt(omegahat2.n)
+
+## Calculate c and -c from standard Normal for given significance level
+alpha <- 0.05
+c.max <- qnorm(1-alpha/2)
+c.min <- qnorm(alpha/2)
+@
+
+What this chunk of code does is first calculate the vector of likelihood contributions for each of our two specifications, using the maximum likelihood estimates just found (notice we use the {\tt coefficients()} call to extract those). From there we add up the differences in these contributions and compute the variance of our test statistic ({\tt LRn}). We then calculate our Vuong statistic and compare this to the upper and lower cutoffs for our prescribed significance level ({\tt c.min} and {\tt c.max}). If the two models cannot be discriminated between themselves then {\tt Tn} should lie between {\tt c.min} and {\tt c.max}. Here we have that \Sexpr{round(Tn, 3)} is less than $|$\Sexpr{round(c.max, 3)}$|$, and we fail to reject the null hypothesis that the two distributions are equally informative. 
+
+\subsection{Calculating Individual Specific Measures}
+
+We can use the housing example to construct various metrics of interest as discussed in Chapter 2. Here for pedagogical purposes we include an example to construct the M$_7$ metric from our initial estimates of the Normal-Exponential hedonic information deficiency example. We will construct the measure both assuming independence and accounting for the induced dependence that arises when we condition on $\varepsilon$.
+
+<<Estimate M7, eval=TRUE, echo=TRUE, results='hide', cache=TRUE>>=
+## Strip off parameter estimates and create epsilon series.
+par.hat <- coefficients(opt.ml.ne)
+ep.hat  <- y-xx%*%par.hat[1:12]
+
+## Pull distributional parameters
+sig.v <- par.hat[13]
+sig.w <- par.hat[14]
+sig.u <- par.hat[15]
+
+## Use 7.23 and 7.26 to construct metrics
+## Setup necessary parameters needed
+lambda <- 1/sig.w+1/sig.u
+a1     <- sig.v^2/(2*sig.u^2)+ep.hat/sig.u
+b1     <- -(ep.hat/sig.v+sig.v/sig.u)
+a2     <- sig.v^2/(2*sig.w^2)-ep.hat/sig.w
+b2     <- ep.hat/sig.v-sig.v/sig.w
+chi1   <- pnorm(b2)+exp(a1-a2)*pnorm(b1)
+chi2   <- exp(a2-a1)*chi1
+
+Eew.cond <- (lambda/(chi2*(lambda-1)))*
+  (pnorm(b1)+exp(0.5*((b2+sig.v)^2-b1^2))*pnorm(b2+sig.v))
+
+Eemw.cond <- (lambda/(chi2*(1+lambda)))*
+  (pnorm(b1)+exp(a2-a1-b2*sig.v+0.5*sig.v^2)*pnorm(b2-sig.v))
+
+Eeu.cond <- (lambda/(chi1*(lambda-1)))*
+  (pnorm(b2)+exp(0.5*((b1+sig.v)^2-b2^2))*pnorm(b1+sig.v))
+
+Eemu.cond <- (lambda/(chi1*(1+lambda)))*
+  (pnorm(b2)+exp(a1-a2-b1*sig.v+0.5*sig.v^2)*pnorm(b1-sig.v))
+
+## Now 7.28 to contrast with dependence
+Eewmu.cond <- exp((1+sig.u)*(a1+(sig.v^2/(2*sig.u))))*pnorm(b1-sig.v)+
+              exp((1-sig.w)*(a2-(sig.v^2/(2*sig.w))))*pnorm(b2+sig.v)
+
+Eewmu.cond <- Eewmu.cond/(exp(a1)*pnorm(b1)+exp(a2)*pnorm(b2))
+
+## M7 Metric
+M7.I <- Eew.cond*Eemu.cond-1
+M7.D <- Eewmu.cond-1
+@
+
+The mean of M$_7$ presuming independence is \Sexpr{round(mean(M7.I), 3)} while the quartiles are \Sexpr{round(quantile(M7.I, 0.25), 3)}, \Sexpr{round(quantile(M7.I, 0.50), 3)} and \Sexpr{round(quantile(M7.I, 0.75), 3)}, respectively. Alternatively, acknowledging that the series are dependent under the exponential transformation, we have that the mean of M$_7$ is \Sexpr{round(mean(M7.D), 3)} while the quartiles are \Sexpr{round(quantile(M7.D, 0.25), 3)}, \Sexpr{round(quantile(M7.D, 0.50), 3)} and \Sexpr{round(quantile(M7.D, 0.75), 3)}, respectively. The means are equal up to three decimal places while the quartiles vary minimally. Figure \ref{fig:M7_ex} plots out the kernel density estimate of the full M$_7$ series, both assuming independence and accounting for dependence of the series. As is clear, there is almost no discernible difference in the two series.
+
+<<KdensM7,eval=TRUE,echo=FALSE,fig=TRUE,fig.cap="\\label{fig:M7_ex}Kernel Density plot of two M$_7$ series for hedonic information deficiency example under Normal-Exponential specification.">>=
+plot(density(M7.I), type="l", lwd=2, lty=1, 
+	   main="", xlab="Information Deficiency", 
+	   ylab="Density")
+lines(density(M7.D), type="l", lwd=2, lty=2)
+@
+
+\section{Allowing Determinants of Deficiency}
+
+The previous discussion presented a basic overview of implementing a variety of specifications of the 2TSF model. However, as we have mentioned at various points of the book, we may also be interested in explaining what drives $u$ and $w$ to be larger/smaller in expectation. This necessitates some changes to the framework to operationalize the code. We consider two distinct cases, modeling the distributional parameters directly and invoking the scaling property. 
+
+\subsection{Modeling the Distributional Parameters Directly}
+
+To allow the distributions of $w$ and $u$ to change based on observable data, we consider access to data $\bm z_w$ and $\bm z_u$ (which may or may not overlap with $\bm x$). To then include this requires only changing a few pieces of our likelihood function at the beginning (but no changes otherwise). Consider the Normal-Exponential 2TSF likelihood function, {\tt likelihood.ne()} presented at the start of this chapter. To allow determinants we would modify the beginning of it as 
+
+<<likelihood_ne_z, eval=TRUE, echo=TRUE, results='hide'>>=
+twotier.ne <- function(p, y, xx, zw, zu){
+
+  nr  <- ncol(xx) ## Calculate number of regressors in regression
+  nzw <- ncol(zw) ## Calculate number of determinants for u component
+  nzu <- ncol(zu) ## Calculate number of determinants for w component
+
+  sigv <- exp(p[nr+1]) ## Assume homoskedastic two sided component
+  sigw <- exp((zw%*%p[(nr+2):(nr+nzw+1)]))
+  sigu <- exp((zu%*%p[(nr+nzw+2):(nr+nzu+nzw+1)]))
+
+  ## Construct residuals
+  e <- y - xx%*%p[1:nr]
+  
+  a1 <- e/sigu + (sigv^2)/(2*sigu^2) 
+  b1 <- -e/sigv - sigv/sigu          
+
+  a2 <- (sigv^2)/(2*sigw^2) - e/sigw 
+  b2 <- e/sigv - sigv/sigw           
+
+  ## Calculate individual likelihood values
+  ll <- -log(sigw+sigu)+log(pnorm(b2)*exp(a2)+pnorm(b1)*exp(a1))
+
+  ## return will send the individual likelihood values
+  return(ll)
+
+}
+@
+
+You will notice that after we construct {\tt sigv}, {\tt sigw} and {\tt sigu}, the code is identical to what was presented previously. The main change is adding in more inputs to the function itself, {\tt zw} and {\tt zu}, and then tailoring the code to allow for a vector of parameters which are used to construct the unknown scale parameters for the two Exponential distributions. We have also changed the specification of {\tt sigv} to follow suit with the exponential transformation. This is not needed but it also providers us with an alternative to constructing variance parameters. A consequence of this transformation is that constrained optimization is no longer required when one calls {\tt maxLik()}. A similar set of changes could be deployed to modify {\tt likelihood.hn()}. 
+
+Table \ref{tab:2TSFDeterm} presents the coefficients for $\bm z_w$ and $\bm z_u$ that stem from optimization of the 2TSF Normal-Exponential and Normal-Half Normal specifications using the housing data analyzed in \citeasnoun{KumbhakarAndParmeter:2010} and that was discussed in Chapter 8. The astute reader will notice that two of the parameter estimates do not have corresponding standard errors. This was due to negative values along the diagonal of the Hessian provided by {\tt maxLik}. An alternative would be to construct the variance-covariance matrix of the maximum likelihood estimator using the outer product of gradients as discussed in Chapter 7. Since our aim here is purely illustrative, we do not pursue this further, but note that these are likely to be issues that are encountered in practice.
+
+\input Determ2TSF.tex
+
+Unlike the homoskedastic housing example used earlier in the chapter, here there are some differences in the coefficient estimates across the two specifications. Namely, for Buyers and Sellers, the coefficient estimates have opposite signs between the Normal-Exponential and the Normal-Half Normal specifications. Black sellers also have opposite signs as well as sellers who are single females. We caution on directly comparing the magnitudes across the two specifications as the parameters are not expressly the same as regards their interpretation in the Exponential and Half Normal settings, however, the signs can be directly compared. 
+
+Of note is that there are many interesting and intuitive findings. Buyers with kids have higher levels of information deficiency (regardless of specification), while more educated buyers, single female buyers and married buyers all have lower levels of information deficiency. First time buyers also suffer from higher rates of information deficiency, though out of town buyers do not. On the seller side, we see that having kids leads to higher levels of deficiency but owning a business, having higher income or higher levels of education, all lead to lower deficiency.  
+
+\subsection{Invoking the Scaling Property}
+
+As was discussed in Chapter 8, when we have access to determinants of deficiency, we no longer need to rely on distributional assumptions to identify the model. Rather, the scaling property is enough to allow for a nonlinear least squares solution. In {\tt R} this can be undertaken via the {\tt nls()} command that is part of the {\tt stats} package installed with base {\tt R}. As an example, suppose for our 2TSF framework, we have three $x$ variables ({\tt x1}, {\tt x2} and {\tt x3}), and $\bm z_w$ and $\bm z_u$ each had two elements ({\tt zw1} and {\tt zw2} and {\tt zu1} and {\tt zu2}, respectively), then the exponential scaling model is estimated using 
+
+<<nls, eval=FALSE, echo=TRUE, results='hide'>>=
+mod.nls <- nls(y-b0-b1*x1-b2*x2-b3*x3-exp(dw0+dw1*zw1+dw2*zw2)+
+                                      exp(du0+du1*zu1+du2*zu2),
+               data=data, start=list(b0=value, b1=value, b2=value, b3=value,
+                                     dw0=value, dw1=value, dw2=value, 
+                                     du0=value, du1=value, du2=value))
+@
+where {\tt value} is a generic place holder for whichever value we wish to start the optimization procedure at. 
+
+What makes the call to {\tt nls()} onerous is that with many unknown parameters each parameter must be written out \textit{explicitly} with its own name and this name must also appear in the list for the starting point of the optimization ({\tt start}). We mention here that the use of {\tt nls} is also different than standard calls that rely on the {\tt Formula} environment in {\tt R}. We are writing the form of the residual that is to be squared in our call to {\tt nls} hence the $-$ sign on {\tt exp(dw0+dw1zw1+dw2zw2)} and the $+$ sign on {\tt exp(du0+du1zu1+du2zu2)}. As an alternative, we can construct our own function and pass it to a nonlinear optimizer (similar to our construction of the likelihood function and then invoking {\tt maxLik}). In {\tt R} there are a wide variety of optimizers, with {\tt optim()} the base optimizer (with a wide variety of techniques) available from stock installation of {\tt R}. 
+
+Here our function is 
+<<nls self construct, eval=TRUE, echo=TRUE, results='hide'>>=
+twotier.nls <- function(p, y, xx, zu, zw){
+
+  nr  <- ncol(xx) ## Calculate number of regressors in regression
+  nzw <- ncol(zw) ## Calculate number of determinants for u component
+  nzu <- ncol(zu) ## Calculate number of determinants for w component
+
+  sigw <- exp((zw%*%p[(nr+1):(nr+nzw)]))
+  sigu <- exp((zu%*%p[(nr+nzw+1):(nr+nzu+nzw)]))
+
+  ## Construct residuals
+  e <- y - xx%*%p[1:nr]-sigw+sigu
+
+  ## We minimize the sum of squared residuals
+  return(sum(e^2))
+
+}
+@
+In this function is is presumed that the user would pass along a column of ones inside of both {\tt zw} and {\tt zu} to capture the unknown means of the deficiency components. For clarity we mention here that there is no need to define or estimate a {\tt sigv} parameter, hence it is not defined in our function {\tt twotier.nls()}. This is due to the fact that as our discussion in Chapter 8 made clear, the error term in two-tier stochastic frontier model which adopts the scaling property is not equal to $v$. One feature of {\tt nls()} that can be a bit cumbersome is the fact that invoking the formula when you have many parameters is tedious, hence user written code like {\tt twotier.nls()} may be easier to implement. Additionally, of one is using {\tt optim()} to optimize, you can turn on the option {\tt hessian=TRUE} so that the Hessian of the objective function is calculated and standard errors can be easily obtained. %Also, our setup here has dropped intercepts from the two scaling functions. It is our experience that these intercepts are either difficult to identify with any precision or can lead to the failure of the optimization algorithm to converge. 
+
+Table \ref{tab:2TSF_NLS} presents the coefficients for $\bm z_w$ and $\bm z_u$ that stem from optimization of the 2TSF Normal-Exponential and Normal-Half Normal specifications using the housing data analyzed in \citeasnoun{KumbhakarAndParmeter:2010} and that was discussed in Chapter 8. 
+
+\input NLS_Determ.tex
+
+Similar to Table \ref{tab:2TSFDeterm} the coefficient estimate on out of town buyer is negative, but the coefficient estimate for first time buyer is negative as well. Aside from education, every variable appears with a negative sign in the scaling function for buyers. For sellers, aside from education and owning their own business, all coefficient estimates appear with a positive sign. More interesting is that owning a business is the only variable whose coefficient estimate has the same sign for both buyers and sellers. 
+
+\section{Allowing Dependence}
+
+We repeat our analysis of the incomplete information setting but now allow dependence. To begin we have to create our likelihood functions that we will optimize over. This is no different than our earlier construction, except that we now have an additional distributional parameter to account for when setting up everything (and of course the distribution is different).
+
+<<likelihood_nce, eval=TRUE, echo=TRUE, results='hide'>>=
+twotier.nce <- function(p, y, xx){
+  
+  nr  <- ncol(xx) ## Calculate number of regressors in regression
+  
+  sigv    <- p[nr+1]  ## Assume homoskedastic two sided component
+  a.prime <- p[nr+2]
+  b.prime <- p[nr+3]
+  m       <- p[nr+4]
+  
+  ## Create residuals
+  e <- y - xx%*%p[1:nr]
+  
+  ## Define omega parameters as before equation (11.8)
+  omega2 <- (e/sigv)+b.prime*sigv
+  omega3 <- (e/sigv)-a.prime*sigv
+  
+  term1 <- m*b.prime*exp(0.5*omega2^2)*pnorm(-omega2)
+  term2 <- (1-m)*a.prime*exp(0.5*omega3^2)*pnorm(omega3)
+
+  ## Construct Density
+  f.e <- sqrt(2*pi)*dnorm(e/sigv)*(term1+term2)
+
+  ## Calculate individual likelihood values
+  ll <- log(f.e)
+  
+  ## return will send the individual likelihood values
+  return(ll) 
+  
+}
+@
+
+As should be clear, there is little to add on the coding of the Normal-Correlated Exponential 2TSF likelihood function. All that has changed is an additional parameter (and that we renamed some of the parameters), which is what controls for the dependence between $w$ and $u$. 
+
+We will also construct the function to return the likelihood values for the Normal-Correlated Truncated Normal 2TSF specification.
+
+<<likelihood_nctn, eval=TRUE, echo=TRUE, results='hide'>>=
+twotier.nctn <- function(p, y, xx){
+  
+  nr  <- ncol(xx) ## Calculate number of regressors in regression
+  
+  sigv <- p[nr+1] ## Assume homoskedastic two sided component
+  sigw <- p[nr+2]
+  sigu <- p[nr+3]
+  rho  <- p[nr+4]
+  
+  ## Construct residuals
+  e <- y - xx%*%p[1:nr]
+  
+  ## Define shorthands
+  sige <- sqrt(sigv^2+sigw^2+sigu^2-2*rho*sigw*sigu)
+  psiw <- sqrt(sigv^2+(1-rho^2)*sigw^2)
+  psiu <- sqrt(sigv^2+(1-rho^2)*sigu^2)
+  r    <- (rho*sigv^2+(1-rho^2)*sigw*sigu)/(psiw*psiu)
+  aw   <- (rho*sigw-sigu)/(sige*psiw)
+  au   <- (rho*sigu-sigw)/(sige*psiu)
+
+  ## Density as defined in Equation 11.20
+  f.e   <- (2*pi/acos(-rho))*dnorm(e/sige)*pbinorm(aw*e, -au*e, 
+                                                   cov12=r)/sige
+  ## Calculate individual likelihood values
+  ll <- log(f.e)
+
+  ## return will send the log of the density of the composite error
+  return(ll)
+
+}
+@
+
+Now, prior to estimation, as in the independent components setting, we have to place box constraints on our parameters. This is almost identical to our earlier setup, except that for the Normal-Correlated Exponential specification we have $m\in[0,1]$ and in the Normal-Correlated Truncated Normal specification we have $\rho\in[-1,1]$. This means we have to place \textit{both} upper and lower bounds on these parameters. For the estimation of these two models the box constraints look different so we will estimate each model separately. 
+
+<<Estimate NCE MLE, eval=TRUE, echo=TRUE, results='hide', cache=TRUE>>=
+A <- matrix(0, 5, 16)
+B <- matrix(0, 5, 1)
+
+A[1, 13] <- 1 ## sigma_v>0
+A[2, 14] <- 1 ## a^prime>0
+A[3, 15] <- 1 ## b^prime>0
+A[4, 16] <- 1 ## m>0
+
+## m<1
+A[5, 16] <- -1	
+B[5]     <- 1 
+
+p.start.nce <- c(7.82477633, 0.11087207, 0.05757073, 0.10282750,
+                 0.15951663, 0.15413679, 0.04375504, 0.12354117,
+                 0.30143483, 0.03092422, 0.16379650, 0.09652393,
+                 0.11538181, 9.07547700, 7.16551247, 0.64971669)
+
+opt.ml.nce <- maxLik(twotier.nce, grad=NULL, hess=NULL, 
+                     method="nm", control=list(iterlim=20000),
+                     constraints=list(ineqA=A, ineqB=B),
+                     start=p.start.nce, y=y, xx=xx)
+@
+
+Here the start values we selected were found through several iterations of starting values and are used here for pedagogical concerns. As we stated earlier, in serious applied settings a range of starting values should be tried to assess the robustness of the estimates to the specific set of starting values. We now turn our attention to optimization of the Normal-Correlated Truncated Normal specification.
+
+<<Estimate NCTN MLE, eval=TRUE, echo=TRUE, results='hide', cache=TRUE>>=
+A <- matrix(0, 5, 16)
+B <- matrix(0, 5, 1)
+
+A[1, 13] <- 1 ## sigma_v>0
+A[2, 14] <- 1 ## sigma_u>0
+A[3, 15] <- 1 ## sigma_w>0
+
+## rho>-1
+A[4, 16] <- 1		
+B[4]     <- 1
+
+## rho<1
+A[5, 16] <- -1	
+B[5]     <- 1
+
+p.start.nctn <- c(7.96949933, 0.12758384, 0.05329819, 0.11283846,
+                  0.18143522, 0.16622376, 0.04746548, 0.12184049,
+                  0.28011132, 0.04260589, 0.15475334, 0.09307778, 
+                  0.04183599, 0.34719496, 0.41250827, 0.81821724)
+
+opt.ml.nctn <- maxLik(twotier.nctn, grad=NULL, hess=NULL, 
+                     	method="nm", control=list(iterlim=20000), 
+                     	constraints=list(ineqA=A, ineqB=B),
+                     	start=p.start.nctn, y=y, xx=xx)
+@
+
+We can use the {\tt summary()} command to print out the coefficient estimates and standard errors for each of the two models to the screen. Table \ref{tab:2TSF_DEP_ex} presents the maximum likelihood estimates and corresponding standard errors. 
+
+<<stargazer3,eval=FALSE,echo=FALSE,results='asis'>>=
+
+zu <- as.matrix(xx[, 1])
+zw <- as.matrix(xx[, 1])
+zz <- as.matrix(xx[,1])
+
+ols    <- lm(y~xx+zz+zu+zw+zu:zw-1)
+ols.ne <- ols
+ols.hn <- ols
+
+## Tabulate standard errors
+se.ne  <- sqrt(diag(vcov(opt.ml.nce)))
+se.hn  <- sqrt(diag(vcov(opt.ml.nctn)))
+se.ols <- sqrt(diag(vcov(ols)))
+
+## Assign sigma_v to 13th element
+ols$coefficients[13] <- sqrt(var(residuals(ols)))
+
+stargazer(list(ols.ne, ols.hn),
+          coef=list(coefficients(opt.ml.nce), 
+                    coefficients(opt.ml.nctn)), 
+          se=list(se.ne, se.hn),
+          label="tab:2TSF_DEP_ex",
+          covariate.labels = c("(Intercept)", "drv", "rec", "ffin",
+                               "ghw", "ca", "gar", "reg", "$\\ln$ lot",
+                               "bd", "fb", "sty", "$\\sigma_v$", 
+                               "$\\sigma_w$", "$\\sigma_u$", "$m$"),
+          star.cutoffs = c(0),
+          out = "2TSF_DEP_ex.tex",
+          no.space=T, digits=3, single.row=F,
+          omit.stat = c("rsq", "adj.rsq", "f", "n", "ser"),
+          intercept.bottom=FALSE,
+          dep.var.labels.include = FALSE,
+          title="2 Tier Stochastic Frontier Estimates Allowing Dependence Between $u$ and $w$.",
+          column.labels=c("Correlated Exponential", "Correlated Truncated Normal")
+          )
+@
+
+\input 2TSF_DEP_ex_USE.tex
+
+There are several interesting features that can be gleaned from the Table. First, the coefficient estimates for the hedonic model themselves are comparable both in sign and magnitude across the specifications. Second, the estimate of $\sigma_v$ does appear to hinge on the specification deployed. For the Normal-Correlated Exponential we have an estimate of $\sigma_v$ that is almost three times larger than the corresponding estimate in the Normal-Correlated Truncated Normal specification. It is not possible to compare the other parameters between the two specifications since the lack of identification in the Correlated Exponential does not allow simple calculation of the moments of $u$ and $w$. 
+ 
+<<Vuong 1989 Test Again, eval=TRUE, echo=FALSE, results='verbatim', cache=TRUE>>=
+
+## Calculate Vuong (1989) test between NE and NHN 2TSF models
+li.NE <- twotier.nce(coefficients(opt.ml.nce), y, xx)
+li.HN <- twotier.nctn(coefficients(opt.ml.nctn), y, xx)
+
+## Difference of likelihood contributions
+li.diff <- li.NE-li.HN
+
+LRn         <- sum(li.diff)
+omegahat2.n <- mean(li.diff^2)-mean(li.diff)^2
+
+## Calculate Vuong statistic
+Tn <- sqrt(1/n)*LRn/sqrt(omegahat2.n)
+
+## Calculate c and -c from standard Normal for given significance level
+alpha <- 0.05
+@
+
+<<CalMeans, eval=TRUE, echo=FALSE, results='verbatim'>>=
+rr <- coefficients(opt.ml.nctn)[16]
+sw <- coefficients(opt.ml.nctn)[15]
+su <- coefficients(opt.ml.nctn)[14]
+
+Ew <- (((pi/2)*(1+rr))/acos(-rr))*sqrt(2/pi)*sw
+Eu <- (((pi/2)*(1+rr))/acos(-rr))*sqrt(2/pi)*su
+Vw <- (1+(rr*sqrt(1-rr^2))/acos(-rr)-((pi/2)*(1+rr)^2)/acos(-rr)^2)*sw^2
+Vu <- (1+(rr*sqrt(1-rr^2))/acos(-rr)-((pi/2)*(1+rr)^2)/acos(-rr)^2)*su^2
+@
+
+However, we can again use the \citeasnoun{Vuong:1989LRselection} test of specification to help adjudicate between the two models. In this case, we have a statistic of \Sexpr{round(Tn,3)}. Compared to the upper and lower cutoffs at the 5\% level, (\Sexpr{round(qnorm(1-alpha/2),3)}, \Sexpr{round(qnorm(alpha/2),3)}) we see that we cannot reject the null of equivalent specification. In this case we may decide to use the Normal-Correlated Truncated Normal specification since it is fully identified and the moments of $u$ and $w$ can be easily assessed. In this case we have that $E(w)=$\Sexpr{round(Ew,3)} and $E(u)=$\Sexpr{round(Eu,3)}, both of which are similar to the first moments when we did not model dependence. Further, the variances are $Var(w)=$\Sexpr{round(Vw,3)} and $Var(u)=$\Sexpr{round(Vu,3)}. Quite close to the results from our earlier analysis of this data. Further, the estimated value of $\rho$, 0.819, is quite high and statistically different from 0, suggesting dependence between $w$ and $u$. 
+
+\section{Allowing Dependence -- Simulated Methods}
+
+Next we turn our attention to allowing dependence where we cannot rely on a closed form for the density of the composite error. Here we will present the steps to engage in Maximum Simulated Likelihood estimation, as discussed in Chapter 11.3. To take Halton draws we access the {\tt randtoolbox} package \cite{randtoolbox} in {\tt R}. The command we need is {\tt halton()}.
+
+<<likelihood_copula, eval=TRUE, echo=TRUE, results='hide'>>=
+suppressMessages(library(randtoolbox))
+
+## Number of Halton Draws
+S <- 200
+
+## Construct Halton Draws
+H.draw <- halton(S, dim=2, init=FALSE)
+
+twotier.copula <- function(p, y, xx, H.draw){
+  
+  nr  <- ncol(xx) ## Calculate number of regressors in regression
+  
+  sigv <- p[nr+1] ## Assume homoskedastic two sided component
+  sigw <- p[nr+2] ## Parameter for w marginal
+  sigu <- p[nr+3] ## Parameter for u marginal
+  rho  <- p[nr+4] ## Correlation for Normal copula
+  
+  ## Calculate residuals
+  e <- y - xx%*%p[1:nr]
+  
+  ## Length of vector to take draws over
+  n <- length(e)
+  
+  f.e <- as.numeric()
+  
+  for (i in 1:n){
+    
+    ## Create `observations' for u and w
+    w.si <- qexp(H.draw[ ,1], rate=1/sigw)
+    u.si <- qexp(H.draw[, 2], rate=1/sigu)
+    
+    ## Calculate distribution
+    Fw.si <- pexp(w.si, rate=1/sigw)
+    Fu.si <- pexp(u.si, rate=1/sigu)
+    
+    ## Construct summands of likelihood
+    ## Noise density
+    fv <- dnorm(e[i]-w.si+u.si, sd=sigv)
+    
+    ## Gaussian copula density
+    w.star <- qnorm(Fw.si)
+    u.star <- qnorm(Fu.si)
+    
+    cdens <- (1/sqrt(1-rho^2))*exp((-(rho^2)*(w.star^2+u.star^2)+
+                                      2*rho*w.star*u.star)/(2*(1-rho^2)))
+    
+    ## Average over S draws
+    f.e[i] <- mean(fv*cdens)
+    
+  }
+
+  ## Take logarithm
+  ll <- log(f.e)
+  
+  ## return will send the log of the density of the composite error
+  return(ll) 
+  
+}
+@
+
+This function looks quite similar to our earlier functions. The only difference is the use of a loop to construct the average for each observation. Note that because we will be optimizing this function, we create a Halton draw outside of the loop with {\tt init=TRUE} such that once we enter the loop we use the same Halton draws for each observation each time the function is called. That is, the variable {\tt toss} is constructed to create a single Halton draw which is never used, but allows fixing the sequence each time the function is called. This will ensure that every time an optimizer calls {\tt twotier.copula}, the same Halton draws are used. Further, as pointed out in Chapter 11.3, we do not use the same Halton draws for all observations, they are unique for each. The setup here that we have is for the Gaussian copula with Exponential marginals for both $w$ and $u$. If we wanted to use say the Clayton or Frank copulas, we would keep everything the same in the function call except the chunk of code that starts {\tt \#\#Gaussian copula density}, which we could replace with 
+<<frank_copula, eval=FALSE, echo=TRUE, results='hide'>>=
+## Frank copula density
+num   <- theta*(1-exp(-theta))*exp(-theta*(Fw.si+Fu.si))
+denom <- exp(-theta)-1+(exp(-theta*Fw.si)-1)*(exp(-theta*Fu.si)-1)
+cdens <- num/(denom^2)
+@
+or 
+<<clayton_copula, eval=FALSE, echo=TRUE, results='hide'>>=
+## Clayton copula density
+num   <- (Fw.si^(-theta)+Fu.si^(-theta)-1)^(-2-1/theta)
+denom <- (Fw.si*Fu.si)^(1+theta)
+cdens <- (1+theta)*num/denom
+@
+
+For consistency with the text, we have written the {\tt rho} parameter that appears in the Gaussian copula density with {\tt theta} for the Frank and Clayton copulas. Naturally this would need to be changed in the beginning of the code for {\tt twotier.copula()} otherwise {\tt R} would throw an error. We also note that the first three parameters signifying the scale parameters for $v$, $w$ and $u$ all still need to be restricted to be greater than 0, but the copula parameter needs to be restricted in the Gaussian framework since $\rho\in[-1,1]$ and in the Clayton framework since $\theta>-1$. For the Frank copula, $\theta$ is unbounded (aside from being restricted to differ from 0). Finally, we mention that our code here is for pedagogical purposes as it relates to the discussion in the text. There are a variety of more code friendly changes that could be made to the construction of the Halton draws that we are eschewing here in favor of parsimony with our discussion in the book. 
+
+Table \ref{tab:2TSF_COP_ex} presents the estimates using Simulated Maximum Likelihood with 200 Halton draws for the Gaussian, Frank and Clayton copulas. There are many interesting features that we can draw from this set of results. First, the coefficient estimates for the hedonic function are quite similar across all three specifications. Second, the variance parameters for both $w$ and $u$ (with Exponential marginals) are also similar between the three different copulas. Third, the variance of $v$ does appear to be sensitive to the choice of copula. Both the Gaussian and Clayton copulas produce estimates of $\sigma_v$ that are an order of magnitude larger than the Frank copula. Fourth, the direction and level of dependence varies considerably between the three different copulas. With the Gaussian copula we have positive dependence (though the $\rho$ parameter estimate is statistically indistinguishable from 0), while the estimate of $\theta$ from the Frank copula is negative and statistically significant and the Clayton copula produces a $\widehat\theta$ that is also negative but again, statistically insignificant. 
+
+\input 2TSF_COP_ex_USE.tex
+
+\subsection{Calculation of Individual Metrics via Simulation}
+
+Following the discussion in Chapter 11.3.3, here we provide a simple illustration to calculate $E(e^w)$ and $E(e^u)$. For this example we will assume that our maximum simulated likelihood estimates using a Gaussian copula were saved in the object {\tt opt.ml.ncop.g}. Further, we will use 200 Halton draws to average over.
+
+<<Estimate Ewu, eval=FALSE, echo=TRUE, results='hide', cache=TRUE>>=
+## Strip off parameter estimates and create epsilon series.
+par.hat <- coefficients(opt.ml.ncop.g)
+
+## Number of regressors
+nr  <- ncol(xx)
+
+## Calculate residuals
+ep.hat  <- y-xx%*%par.hat[1:nr]
+
+## length of residual vector to loop over
+n <- length(ep.hat)
+
+## Assign parameter estimates
+sigv <- par.hat[nr+1] ## Assume homoscedastic two sided component
+sigw <- par.hat[nr+2] ## Parameter for u marginal
+sigu <- par.hat[nr+3] ## Parameter for w marginal
+rho  <- par.hat[nr+4] ## Correlation for Normal copula
+
+## Construct density using Halton draws
+f.e <- as.numeric()
+	
+for (i in 1:n){
+
+	w.si <- qexp(H.draw[ ,1], rate=1/sigw)
+	u.si <- qexp(H.draw[, 2], rate=1/sigu)
+
+	## Construct summands
+	## Noise density
+	fv <- dnorm(ep.hat[i]-w.si+u.si, sd=sigv)
+		
+	## Copula density
+	Fw.si <- pexp(w.si, rate=1/sigw)
+	Fu.si <- pexp(u.si, rate=1/sigu)
+		
+	w.star <- qnorm(Fw.si)
+	u.star <- qnorm(Fu.si)
+		
+	cdens <- (1/sqrt(1-rho^2))*exp((-(rho^2)*(w.star^2+u.star^2)+
+	                                  2*rho*w.star*u.star)/(2*(1-rho^2)))
+
+	f.e[i] <- mean(fv*cdens)
+
+}
+
+## Now calculate desired expectations
+Eew.sim <- as.numeric()
+Eeu.sim <- as.numeric()
+
+for (i in 1:n){
+
+	w.si <- qexp(H.draw[ ,1], rate=1/sigw)
+	u.si <- qexp(H.draw[, 2], rate=1/sigu)
+
+	## Construct summands
+	## Noise density
+	fv <- dnorm(ep.hat[i]-w.si+u.si, sd=sigv)
+		
+	## Copula density
+	Fw.si <- pexp(w.si, rate=1/sigw)
+	Fu.si <- pexp(u.si, rate=1/sigu)
+		
+	w.star <- qnorm(Fw.si)
+	u.star <- qnorm(Fu.si)
+		
+	cdens <- (1/sqrt(1-rho^2))*exp((-(rho^2)*(w.star^2+u.star^2)+
+	                                  2*rho*w.star*u.star)/(2*(1-rho^2)))
+
+	## Create expectations
+	Eew.sim[i] <- mean(exp(w.si)*fv*cdens)/f.e[i]
+	Eeu.sim[i] <- mean(exp(u.si)*fv*cdens)/f.e[i]
+
+}
+@
+
+Figure \ref{fig:MetrxDep} displays kernel density estimates for the two series created through simulation via 200 Halton draws. The density for $E[e^{u}|\varepsilon]$ has a slightly smaller peak and a thicker right hand tail than the density for $E[e^{w}|\varepsilon]$.
+
+\begin{figure}
+\caption{Kernel Density plots of $E[e^{w}|\varepsilon]$ and $E[e^{u}|\varepsilon]$ for hedonic information deficiency example under Normal-Exponential specification allowing dependence using a Gaussian copula. \label{fig:MetrxDep}}
+\includegraphics[scale=0.75]{Kdens_Simulation_EworEu.pdf}
+\end{figure}
+
+\section{Other Software}
+
+Our discuss so far has focused on implementation of many of the main approaches in the 2TSF paradigm within the {\tt R} statistical environment. However, other statistical platforms exist with which we can estimate and conduct inference for the 2TSF model. 
+
+\subsection{STATA}
+
+A blackbox implementation of the Normal-Exponential and the Normal-Half Normal specifications of the 2TSF model (with and without determinants) is available in STATA \cite{LIAN_ETAL:2023} through the {\tt sftt} command. {\tt sftt} also fits 2TSF models with the scaling property to mitigate concerns over distributional specifications using the NLS procedure described in Chapter 8. In addition, there are two subcommands, {\tt sftt sigs} and {\tt sftt eff}, to assist in post estimation deficiency analysis and construction of the various metrics discussed here. At the moment the {\tt sftt} command does not allow dependence between $u$ and $w$. 
+
+\subsection{GRETL}
+
+\begin{singlespacing}
+   \bibliographystyle{agsm} \bibliography{ALLbibliography.bib}
+\end{singlespacing}
+
+\end{document}
+
