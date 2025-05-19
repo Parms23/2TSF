@@ -1,0 +1,109 @@
+#### 2TSF Normal Exponential model in LEVELS #####
+
+### Obtain initial values for MLE through OLS ###
+ols price Xlist    --quiet   ## price = dep variable , Xlist = list of regressors
+
+matrix bVec = $coeff
+scalar sOLS = $sigma
+ 
+scalar sv = sOLS/3
+scalar sw = sOLS/3
+scalar su = sOLS/3
+
+string varblnames = varname(Xlist)
+string errnames = ",sv,sw,su"
+string allcoefnames = varblnames ~ errnames
+
+###Run MLE ###
+mle logl = check ? -ln(sw + su) + ln(exp(a1)*cnorm(b1) + exp(a2)*cnorm(b2)):NA
+    series resMLE = price - lincomb(Xlist,bVec)
+    # Note: the loglikelihood in the exponential spec does not contain any constant terms
+
+  series a1 = sv^2 / (2* su^2) + resMLE / su
+  series b1 = -resMLE / sv - sv/su
+  series a2 = sv^2 / (2*sw^2) - resMLE / sw
+  series b2 = resMLE / sv - sv/sw
+ 
+
+scalar check = (sv>0) && (sw>0) && (su>0)
+params bVec sv sw su
+param_names allcoefnames
+end mle  --verbose
+
+### Create the series and scalars needed for computing the 2TSF metrics in levels ###
+series yhat = lincomb(Xlist,bVec)
+scalar yhatmean = mean(yhat)
+series res = price - lincomb(Xlist,bVec)
+scalar ymean = mean(price)  
+
+  series a1 = sv^2 / (2* su^2) + res  / su
+  series b1 = -res  / sv - sv/su
+  series a2 = sv^2 / (2*sw^2) - res  / sw
+  series b2 = res  / sv - sv/sw
+  
+  scalar lam = 1/sw + 1/su
+  
+  series chi1 = cnorm(b2) + exp(a1-a2)*cnorm(b1)
+  series chi2 = exp(a2-a1)*chi1
+  
+  
+  series Ewcond = 1/lam + (sv/chi1)*(dnorm(b2) + b2*cnorm(b2))
+  series Eucond = 1/lam + (sv/chi2)*(dnorm(b1) + b1*cnorm(b1))
+
+  ### Compute the 2TSF metrics #### 
+  
+  ### A. Sample-level metrics
+  scalar M1s = sw / ymean
+  scalar M2s = su / ymean
+  scalar M3s = sw / su
+  scalar M4s = (sw + su) / yhatmean
+  scalar M5s = sw / yhatmean
+  scalar M6s = su / yhatmean
+  scalar M7s = (sw - su) / yhatmean
+  scalar M8s = su / (ymean + su)
+  scalar M9s = sw / (ymean - sw)
+  scalar M10s =  (sw - su) / ymean ##this is not computed in the book application, read why in p. 39
+  
+### B. Observation-level metrics (series)
+
+  series M1 = Ewcond / price
+  series M2 = Eucond / price
+  series M3 = Ewcond / Eucond
+  series M4 = (Ewcond + Eucond) / (price - Ewcond + Eucond)
+  series M5 =  Ewcond / (price - Ewcond + Eucond)
+  series M6 = Eucond/ (price - Ewcond + Eucond)
+  series M7 = (Ewcond - Eucond) / (price - Ewcond + Eucond)
+  series M8 = Eucond / (price + Eucond)
+  series M9 = Ewcond / (price - Ewcond)
+  series M10 = (Ewcond - Eucond) / price 
+  
+### The following are not presented in the book application
+series M7plus = Ewcond > Eucond ? (Ewcond - Eucond) / (price - Ewcond + Eucond)  : NA
+series M7minus = Ewcond < Eucond ? (Ewcond - Eucond) / (price - Ewcond + Eucond)  : NA
+
+series M10plus = Ewcond > Eucond ? (Ewcond + Eucond) / price  : NA
+series M10minus = Ewcond < Eucond ? (-Ewcond + Eucond) / price  : NA
+  
+  ### Empirical means of series of individual metrics
+  
+  scalar M1mean = mean(M1)
+  scalar M2mean = mean(M2)
+  scalar M3mean = mean(M3)
+  scalar M4mean = mean(M4)
+  scalar M5mean = mean(M5)
+  scalar M6mean = mean(M6)
+  scalar M7mean = mean(M7)
+  scalar M8mean = mean(M8)
+  scalar M9mean = mean(M9)
+  scalar M10mean = mean(M10)
+  
+  #### Compute quantiles of individual metrics and put it in a Book Table-friendly matrix
+  
+  matrix metricsM = {M1, M2, M3, M4, M5, M6, M7, M8, M9}
+  matrix quants = {0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9}
+  
+  matrix metricsquant = transp(quantile(metricsM, quants))
+  
+  ###
+  
+  
