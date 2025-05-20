@@ -1,0 +1,129 @@
+# 2TSF Norm-Exp with Beta Bargaining Power  (used with the Ghana data sample) 
+
+list Xlist1 print
+  
+#const MALE TENURE TENSQ EDUC EDUCSQ PEXP PEXPSQ MGMT SUPER ADMIN \
+# SALES TECH CAPCITY WOOD1 TEXTILE1 METAL1 ANYFOR ANYSTAT LEMP LVADEMPPPP \
+  # LCAPEMPPPP Tr 
+  
+scalar obsn = $nobs
+series Depvar = LMEARNPP
+
+#user-defined function to be able to compute the likelihood through quadrature
+function series likelyval (const matrix quadL, matrix *nodesvalL, series resmle, series *obsval,\
+                            scalar obsn, scalar sv, scalar sg, scalar sigd, scalar gamma, scalar delta )
+    loop i=1..obsn  --quiet
+        loop j=1..rows(quadL) --quiet
+            
+        a1 = sv^2 / (2*sigd^2*(1-quadL[j,1])^2) + resmle[i] / (sigd*(1-quadL[j,1]))
+        b1 = -resmle[i] / sv - sv / (sigd*(1-quadL[j,1]))
+        a2 = sv^2 / (2*sg^2*quadL[j,1]^2)  - resmle[i] / (sg*quadL[j,1])
+        b2 = resmle[i] / sv  - sv / (sg*quadL[j,1])
+            
+    nodesvalL[j] = quadL[j,2]*quadL[j,1]^(gamma-1) * (1 - quadL[j,1])^(delta-1) * (1/(quadL[j,1]*sg + (1-quadL[j,1])*sigd))* (exp(a1)*cnorm(b1) + exp(a2)*cnorm(b2))
+        endloop
+    obsval[i] = sumc(nodesvalL)
+    endloop
+    return obsval
+    #[FUNCTION CALL WILL BE] series likely =likelyval(GLeg7,&approxvalL, res, &obsvals, obsn, sv, sg, sigd, gamma, delta) 
+end function
+
+
+matrix GLeg7 = quadtable(7,2,0,1)  #in place of quadL, 7-point Gauss-Legendre quadrature in (0,1)
+matrix approxvalL = zeros(rows(GLeg7), 1) #
+series obsvals = 0
+
+#OLS for starting values
+ols Depvar Xlist1 --quiet
+matrix bcoeff = $coeff
+series OLSres = $uhat
+
+scalar sv = 0.5  
+scalar sg = 0.5 
+scalar sigd= 0.5 
+scalar gamma = 2 
+scalar delta = 2
+
+#This so that the names of the variables appear in the estimation output
+string varblnames = varname(Xlist1)
+string errnames = ",sigmav,sigmag,sigmad,gamma,delta"
+string allcoefnames = varblnames ~ errnames
+
+#set hc_version 2
+#set max_verbose full
+#set bfgs_richardson on  
+#set optimizer newton  
+
+mle logl = check ?  C3 - C1 - C2 +  log(likely) :NA
+series res = Depvar - lincomb(Xlist1,bcoeff)
+    
+scalar C1 = lngamma(gamma)
+scalar C2 = lngamma(delta)
+scalar C3 = lngamma(gamma+delta)
+
+series likely =likelyval(GLeg7,&approxvalL, res, &obsvals, obsn, sv, sg, sigd, gamma, delta) 
+
+scalar check = (sv>0) && (sg>0)   && (sigd>0) && (gamma>0) && (delta>0)
+params bcoeff sv sg sigd gamma delta  
+param_names allcoefnames
+end mle  --robust #--verbose --hessian 
+
+series mleres = Depvar - lincomb(Xlist1,bcoeff)
+
+#matrix MLEmixtVCV = $vcv
+#print MLEmixtVCV
+
+
+############### Individual measure for eta ########################
+matrix etaval = zeros(rows(GLeg7), 1)
+series etaJLMSnumer = 0
+series etaJLMSdenom = 0
+
+##compute the numerator of E(eta | ε)
+loop i=1..obsn  --quiet
+        loop j=1..rows(GLeg7) --quiet
+a1 = sv^2 / (2*sigd^2*(1-GLeg7[j,1])^2) + mleres[i] / (sigd*(1-GLeg7[j,1]))
+        b1 = -mleres[i] / sv - sv / (sigd*(1-GLeg7[j,1]))
+        a2 = sv^2 / (2*sg^2*GLeg7[j,1]^2)  - mleres[i] / (sg*GLeg7[j,1])
+        b2 = mleres[i] / sv  - sv / (sg*GLeg7[j,1])
+            
+    etaval[j] = GLeg7[j,2]*GLeg7[j,1]^(gamma) * (1 - GLeg7[j,1])^(delta-1) * (1/(GLeg7[j,1]*sg + (1-GLeg7[j,1])*sigd))* (exp(a1)*cnorm(b1) + exp(a2)*cnorm(b2))
+        endloop
+    etaJLMSnumer[i] = sumc(etaval)
+endloop
+
+
+##compute the denominator of E(eta | ε)
+loop i=1..obsn  --quiet
+        loop j=1..rows(GLeg7) --quiet
+a1 = sv^2 / (2*sigd^2*(1-GLeg7[j,1])^2) + mleres[i] / (sigd*(1-GLeg7[j,1]))
+        b1 = -mleres[i] / sv - sv / (sigd*(1-GLeg7[j,1]))
+        a2 = sv^2 / (2*sg^2*GLeg7[j,1]^2)  - mleres[i] / (sg*GLeg7[j,1])
+        b2 = mleres[i] / sv  - sv / (sg*GLeg7[j,1])
+            
+    etaval[j] = GLeg7[j,2]*GLeg7[j,1]^(gamma-1) * (1 - GLeg7[j,1])^(delta-1) * (1/(GLeg7[j,1]*sg + (1-GLeg7[j,1])*sigd))* (exp(a1)*cnorm(b1) + exp(a2)*cnorm(b2))
+        endloop
+    etaJLMSdenom[i] = sumc(etaval)
+    endloop
+
+series etaJLMS = etaJLMSnumer / etaJLMSdenom
+
+
+#deciles of the distribution of E(eta | ε)
+matrix etadeciles = zeros(10,1)
+loop j=1..9
+    etadeciles[j,1] = quantile(etaJLMS,j/10)
+endloop
+
+matrix etaquant = zeros(5,1)
+etaquant[1,1] = quantile(etaJLMS,0.1)
+etaquant[2,1] = quantile(etaJLMS,0.3)
+etaquant[3,1] = quantile(etaJLMS,0.5)
+etaquant[4,1] = quantile(etaJLMS,0.7)
+etaquant[5,1] = quantile(etaJLMS,0.9)
+
+##
+
+
+
+
