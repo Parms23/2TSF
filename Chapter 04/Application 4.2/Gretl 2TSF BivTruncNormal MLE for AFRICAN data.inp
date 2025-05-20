@@ -1,0 +1,300 @@
+# 2TSF Bivariate Truncated Normal spec (used with AFRICAN (Zambia) Data
+
+list Xlist1Alt print  #It does NOT innclude PEXPSQ
+
+#const MALE TENURE TENSQ EDUC EDUCSQ PEXP MGMT SUPER ADMIN SALES \
+ #TECH CAPCITY WOOD1 TEXTILE1 METAL1 ANYFOR ANYSTAT LEMP LVADEMPPPP \
+  # LCAPEMPPPP Tr 
+  
+scalar obsn = $nobs
+series Depvar = LMEARNPP
+
+set hc_version 2
+
+#XXXXXXXXXXXXXXXXXXXXXX
+# Bivariate Truncated Normal 2TSF model (negative dependence between the latent forces), and Gaussian Copula (for endogeneity)
+
+#A) Double trasnform 
+
+#call function to obtain rankings without subtracting half of ties
+function series rankingalt(series X)
+    matrix a = aggregate(const, X)
+    matrix b = cum(a[,2])
+    return replace(X, a[,1], b)
+end function
+
+series EDUCCupPhi = invcdf(N,(1/($nobs+1))*rankingalt(EDUC))
+series PEXPCupPhi = invcdf(N,(1/($nobs+1))*rankingalt(PEXP))
+
+# After graphing/testing the above two series, we find that EDUCCupPhi does not behave like a Normal, 
+# so we need to use the Copula likelihood version for a discrete regressor.
+# On why and how, see Papadopoulos, A. (2022). Accounting for endogeneity in regression models using copulas: 
+# a step-by-step guide for empirical studies. Journal of Econometric Methods, 11(1), 127-154.
+
+#user-defined function needed to evaluate the integral in the likelihood
+function series lowlim(series X)  
+    matrix a = values(X)    
+    scalar rdim = rows(a)
+    matrix b = zeros(rdim,1)
+  loop j=2..rdim  --quiet   
+    b[j,1]= a[j-1,1]
+  endloop
+matrix b[1,1]= xmin(0.5*minc(a),-3.7)  # this value must be set by the user depending on each specific situation. Here it is set at ~ invcdf(N,0,1,0.0001)
+    return replace(X, a[,1], b[,1])
+end function
+
+#create the lower integration limit series
+series EDUCCupPhil = lowlim(EDUCCupPhi)
+
+#create the necessary series for 3-point Gauss-Legendre quadrature
+series qval1 = 0
+series qval2 = 0
+series qval3 = 0
+series qw1 = 0
+series qw2 = 0
+series qw3 = 0
+
+    loop j=1..obsn   --quiet
+        
+        matrix quadpoints = quadtable(3,2,EDUCCupPhil[j],EDUCCupPhi[j])
+        scalar lowlimj = EDUCCupPhil[j]
+        scalar uplimj = EDUCCupPhi[j]
+        
+        matrix quadpoints = quadtable(3,2,lowlimj,uplimj)
+        series qval1[j] = quadpoints[1,1]
+        series qval2[j] = quadpoints[2,1]
+        series qval3[j] = quadpoints[3,1]
+        series qw1[j] = quadpoints[1,2]
+        series qw2[j] = quadpoints[2,2]
+        series qw3[j] = quadpoints[3,2]
+    endloop
+
+    ##We do not have a closed form for the BivTruc CDF. We cannot simulate inside an mle command, so we have, here too, to apply quadrature.
+    #Another user-defined function.
+function series CDFeval(matrix quad, matrix funcval, series resmle, series *CDFval, scalar obsn, scalar se, scalar aw, scalar au, scalar r, scalar rho)
+    loop i=1..obsn  --quiet
+        loop j=1..rows(quad) --quiet
+            funcval[j] = exp(quad[j,1])*dnorm((quad[j,1]+resmle[i])/se)*cdf(D, r, aw*(quad[j,1]+resmle[i]), -au*(quad[j,1]+resmle[i]))
+        endloop
+        CDFval[i] = 1- (2*$pi/(acos(-rho)*se))* funcval'quad[,2]
+    endloop
+    return CDFval
+    #[FUNCTION CALL will be]       series CDF = CDFeval(GLagquad,approxval, res, &CDFfvals, obsn, se, aw,au,r,rho) 
+    end function
+    
+matrix GLagquad = quadtable(15, 3)  ##Gauss-Laguerre quadrature nodes and weights
+matrix approxval = zeros(rows(GLagquad), 1)
+series CDFfvals = 0
+
+#This so that the names of the variables appear in the estimation output
+string varblnames = varname(Xlist1Alt)
+string errnames = ",sigmav,sigmaw,sigmau,rho,rhoEDUCe,rhoPEXPe"
+string allcoefnames = varblnames ~ errnames
+
+#Starting or fixed values
+scalar rho12 = corr(EDUCCupPhi,PEXPCupPhi) #fixed value will not be subject to estimation
+scalar rho1e = 0.8
+scalar rho2e = -0.17
+
+scalar sv = 0.5  #stdev of random disturbance
+scalar sw = 18    
+scalar su= 10
+scalar rho = -0.8
+
+ols Depvar Xlist1Alt --quiet
+series OLSres = $uhat
+
+matrix bcoeff = $coeff   
+
+set bfgs_richardson on  
+#set optimizer newton  
+
+mle logl = check ? -0.5*ldet(R) + log(qw1*exp(-0.5*qRq1)+qw2*exp(-0.5*qRq2)+qw2*exp(-0.5*qRq3)) \
+             + 0.5*((invcdf(N,CDF))^2) -log(C) + log(dnorm(res/se)) + log(cdf(D, r, aw*res, -au*res)) :NA
+    
+    #the loglikelihood when all endogenous regressors are continuous would be
+    #logl = check ? -0.5*ldet(R) -0.5*qRq + 0.5*((invcdf(N,CDF))^2) -log(C) + log(dnorm(res/se)) + log(cdf(D, r, aw*res, -au*res)) :NA
+    
+series res = Depvar - lincomb(Xlist1Alt,bcoeff)
+
+scalar se = sqrt(sv^2 + sw^2 + su^2 -2*rho*sw*su)
+scalar psiu = sqrt(sv^2 + (1-rho^2)*(su^2))
+scalar psiw = sqrt(sv^2 + (1-rho^2)*(sw^2))
+
+scalar r = (rho*sv^2 + (1-rho^2)*su*sw)  / (psiu*psiw)
+
+scalar aw = (rho*sw - su)/(se*psiw)
+scalar au = (rho*su - sw)/(se*psiu)
+
+scalar C = acos(-rho)*se
+
+#Copula part
+
+##We call the function we created to evaluate the BivTrunc CDF through quadrature. 
+series CDF = CDFeval(GLagquad,approxval, res, &CDFfvals, obsn, se, aw,au,r,rho)    
+
+matrix R = {1,rho12,rho1e; rho12,1,rho2e; rho1e, rho2e,1}
+
+matrix q1 = {qval1, PEXPCupPhi,invcdf(N,CDF)}
+    matrix qq1 = q1*inv(R)
+    series qRq1 = sumr(q1.*qq1)
+    
+matrix q2 = {qval2, PEXPCupPhi,invcdf(N,CDF)}
+    matrix qq2 = q2*inv(R)
+    series qRq2 = sumr(q2.*qq2)
+    
+matrix q3 = {qval3, PEXPCupPhi,invcdf(N,CDF)}
+    matrix qq3 = q3*inv(R)
+    series qRq3 = sumr(q3.*qq3)
+
+    #for continuous endog regressors we would use instead something like
+    #matrix q = {EDUCCupPhi_c,PEXPCupPhi,invcdf(N,CDF)}
+    #matrix qq = q*inv(R)
+    #series qRq = sumr(q.*qq)
+
+scalar check = (sv>0) && (sw>0)   && (su>0) && (abs(rho) <1)  && (abs(rho1e)<1) && (abs(rho2e)<1) 
+params bcoeff sv sw su rho  rho1e rho2e
+param_names allcoefnames
+end mle  --robust #--cluster=FIRM --verbose --hessian
+
+#compute the MLE residuals (for use in the Normality test, as well as in the individual 2TSF metrics)
+
+series resBT = Depvar - lincomb(Xlist1Alt,bcoeff)
+
+#Specification Test  (structured as a Normality test on transformed CDF)
+series CDFfinal = CDFeval(GLagquad,approxval, resBT, &CDFfvals, obsn, se, aw,au,r,rho) 
+series CDFfinalNorm = invcdf(N,CDFfinal)
+normtest CDFfinalNorm  #specification test based on the ML residuals. 
+
+
+
+#######   Sample-level and Individual 2TSF metrics      #############
+scalar se = sqrt(sv^2 + sw^2 + su^2 -2*rho*sw*su)
+scalar psiu = sqrt(sv^2 + (1-rho^2)*(su^2))
+scalar psiw = sqrt(sv^2 + (1-rho^2)*(sw^2))
+
+scalar r = (rho*sv^2 + (1-rho^2)*su*sw)  / (psiu*psiw)
+
+scalar aw = (rho*sw - su)/(se*psiw)
+scalar au = (rho*su - sw)/(se*psiu)
+
+series JLMSden1 = se*cdf(D, r, aw*resBT, -au*resBT)
+series JLMSden2 = JLMSden1 / se 
+
+
+#E(w | ε)
+scalar lw = (sv^2*rho+sw*su*(1-rho^2))/(psiu*sv*sqrt(1-rho^2))
+scalar gammaw = su*sqrt(1-rho^2) / (psiu*sv)
+scalar bw = se / psiu
+
+scalar dnormwcoef = (bw*gammaw + au*lw)/sqrt(bw^2+lw^2)
+scalar cnormwcoef = (gammaw*lw-au*bw)/sqrt(bw^2+lw^2)
+
+series Omega1a = (lw/sqrt(bw^2+lw^2))*dnorm(dnormwcoef*resBT)*cnorm(cnormwcoef*resBT) + dnorm(au*resBT)*cnorm(-gammaw*resBT)
+series Omega1b = (cnorm(-au*resBT) - cdf(D, -lw/sqrt(bw^2+lw^2), dnormwcoef*resBT, -au*resBT))*au*resBT
+series Omega1 = Omega1a - Omega1b
+
+series Ewcond = psiu*sw*Omega1 / JLMSden1
+
+
+#E[exp(w)]
+scalar Eexpwunc = (2*$pi/acos(-rho))*exp(sw^2/2)*(cnorm(rho*sw)-cdf(D, -rho, rho*sw, -sw))
+
+#E[exp(w)| ε]
+series Omega2 = 1- cnorm(-gammaw*resBT)*cnorm(au*resBT - sw/bw) - cdf(D, bw/sqrt(bw^2+lw^2), gammaw*resBT, ((au*lw+bw*gammaw)*resBT - sw*lw/bw)/sqrt(bw^2+lw^2))
+series Eexpw = exp((-sw*au/bw)*resBT + sw^2/(2*(bw^2)))*Omega2 / JLMSden2
+
+
+#E[exp(-w)]
+scalar Eexpnegwunc = (2*$pi/acos(-rho))*exp(sw^2/2)*(cnorm(-rho*sw)-cdf(D, -rho, -rho*sw, sw))
+
+#E[exp(-w)| ε]
+series Omega2neg = 1- cnorm(-gammaw*resBT)*cnorm(au*resBT + sw/bw) - cdf(D, bw/sqrt(bw^2+lw^2), gammaw*resBT, ((au*lw+bw*gammaw)*resBT + sw*lw/bw)/sqrt(bw^2+lw^2))
+series Eexpwneg = exp((sw*au/bw)*resBT + sw^2/(2*(bw^2)))*Omega2neg / JLMSden2
+
+
+
+#E[exp(u)]
+scalar Eexpuunc = (2*$pi/acos(-rho))*exp(su^2/2)*(cnorm(rho*su)-cdf(D, -rho, rho*su, -su))
+
+
+#E(u| ε)
+scalar lu = (sv^2*rho+sw*su*(1-rho^2))/(psiw*sv*sqrt(1-rho^2))
+scalar gammau = sw*sqrt(1-rho^2) / (psiw*sv)
+scalar bu = se / psiw
+
+scalar dnormucoef = (bu*gammau + aw*lu)/sqrt(bu^2+lu^2)
+scalar cnormucoef = (aw*bu -gammau*lu)/sqrt(bu^2+lu^2)
+
+series Omega3a = (lu/sqrt(bu^2+lu^2))*dnorm(dnormucoef*resBT)*cnorm(cnormucoef*resBT) + dnorm(aw*resBT)*cnorm(gammau*resBT)
+series Omega3b = cdf(D, lu/sqrt(bu^2+lu^2), dnormucoef*resBT, aw*resBT)*aw*resBT
+series Omega3 = Omega3a + Omega1b
+
+series Eucond = psiw*su*Omega3 / JLMSden1
+
+#E[exp(u)| ε]
+series Omega4a = cnorm(gammau*resBT)*cnorm(aw*resBT + su/bu) + cnorm( ((su*lu/bu)+(bu*gammau+aw*lu)*resBT)/sqrt(bu^2+lu^2))
+series Omega4b = cdf(D, bu/sqrt(bu^2+lu^2), gammau*resBT, ((aw*lu+bu*gammau)*resBT + su*lu/bu)/sqrt(bu^2+lu^2))
+series Omega4 = Omega4a-Omega4b
+
+series Eexpu = exp((su*aw/bu)*resBT + su^2/(2*(bu^2)))*Omega4 / JLMSden2
+
+#E[exp(-u)]
+scalar Eexpunegunc = (2*$pi/acos(-rho))*exp(su^2/2)*(cnorm(-rho*su)-cdf(D, -rho, -rho*su, su))
+
+#E[exp(-u)| ε]
+series Omega4aneg = cnorm(gammau*resBT)*cnorm(aw*resBT - su/bu) + cnorm( ((-su*lu/bu)+(bu*gammau+aw*lu)*resBT)/sqrt(bu^2+lu^2))
+series Omega4bneg = cdf(D, bu/sqrt(bu^2+lu^2), gammau*resBT, ((aw*lu+bu*gammau)*resBT - su*lu/bu)/sqrt(bu^2+lu^2))
+series Omega4neg = Omega4aneg-Omega4bneg
+
+series Eexpuneg = exp((-su*aw/bu)*resBT + su^2/(2*(bu^2)))*Omega4neg / JLMSden2
+
+
+#E{exp(w-u)]
+scalar swu = sqrt(sw^2 + su^2 -2*rho*sw*su)
+scalar Eexpwminuunc = (2*$pi*exp(swu^2/2)/acos(-rho))*( cdf(D, (rho*su-sw)/swu, -(rho*su-sw), -swu) + cnorm(rho*sw-su) - cdf(D, -(rho*sw-su)/swu, rho*sw-su, -swu))
+
+#if the correlatio coefficients inside the Bivariates are too high, computation is not very reliable).
+
+
+
+#E{exp(w-u) | ε]
+series Omega5a = cdf(D, sv*se*au/swu, -au*(sv^2+resBT), -(sv^2+resBT)*swu/(sv*se)) + cnorm(aw*(sv^2+resBT))
+series Omega5b = cdf(D, -sv*se*aw/swu, aw*(sv^2+resBT), -(sv^2+resBT)*swu/(sv*se))
+series Omega5 = Omega5a - Omega5b
+
+series Eexpwminu = exp(swu^2*resBT/(se^2) + sv^2*swu^2/(2*se^2))*Omega5 / JLMSden2
+
+
+#E{exp(u-w) | ε]
+series Omega6a = cdf(D, sv*se*au/swu, -au*(resBT-sv^2), -(resBT-sv^2)*swu/(sv*se)) + cnorm(aw*(resBT-sv^2))
+series Omega6b = cdf(D, -sv*se*aw/swu, aw*(resBT-sv^2), -(resBT-sv^2)*swu/(sv*se))
+series Omega6 = Omega6a - Omega6b
+
+series Eexpuminw = exp(-swu^2*resBT/(se^2) + sv^2*swu^2/(2*se^2))*Omega6 / JLMSden2
+##
+
+### CHECK THE USE OF THE BELOW
+series positvenegot = (resBT>0)
+series positveperform = (Eexpwminu>1)
+series expres = exp(resBT)
+
+series M10gain = 1-Eexpuminw
+
+series EstEarnings = exp(Depvar)*exp( - resBT)
+series ActEarnings = exp(Depvar)
+
+###########
+
+
+scalar covEDUCRes = cov(EDUC, resBT)
+scalar covPEXPRes = cov(PEXP, resBT)
+scalar varEDUC = var(EDUC)
+scalar varPEXP = var(PEXP)
+series workeffectplus = exp(lincomb(WorkRegrs,bcoeff[2:12]) + 0.3652*EDUC + 0.007143*PEXP)
+series resBtadj = resBT - (covEDUCRes/varEDUC)*EDUC - (covPEXPRes/varPEXP)*PEXP
+
+
+
+normtest CDFfinalNorm --all
+
