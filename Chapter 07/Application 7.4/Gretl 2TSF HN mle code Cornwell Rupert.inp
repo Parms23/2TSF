@@ -1,0 +1,92 @@
+# Two-tier stochastic frontier model - Half Normal specification MLE and metrics
+
+#Chapter 7.4
+
+ols  LWAGE const  EXP   EXP2 WKS  OCC  IND  SOUTH  SMSA  MS  FEM  UNION   ED BLK   --quiet
+
+scalar c0 = $coeff(const)
+scalar c1 = $coeff(EXP)
+scalar c2 = $coeff(EXP2)
+scalar c3 = $coeff(WKS)
+scalar c4 = $coeff(OCC)
+scalar c5 = $coeff(IND)
+scalar c6 = $coeff(SOUTH)
+scalar c7 = $coeff(SMSA)
+scalar c8 = $coeff(MS)
+scalar c9 = $coeff(FEM)
+scalar c10 = $coeff(UNION)
+scalar c11 = $coeff(ED)
+scalar c12 = $coeff(BLK)
+
+
+matrix Depv = {LWAGE}
+matrix Regrs = {const,  EXP,   EXP2, WKS,  OCC,  IND,  SOUTH,  SMSA,  MS,  FEM,  UNION,   ED, BLK}
+matrix cVec = {c0,c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12}'
+
+
+
+# set bfgs_richardson on  
+# set optimizer newton  
+
+scalar v0 = 1  #this is sigma_v of the book
+scalar v1 = 1  #this is sigma_w of the book
+scalar v2 = 1  #this is sigma_u of the book
+
+mle logl = check ?  ln(4/sqrt(2*$pi)) -ln(v) - 0.5*(e2hn/v)^2 + ln(cdf(D,l1/sqrt(1+l1^2), e2hn/omega1, 0) - cdf(D,-l2/sqrt(1+l2^2), e2hn/omega2, 0)):NA
+    
+series e2hn = Depv - Regrs*cVec
+#we do not use here the "theta" composite coefficients that appear in the book, p. 161
+scalar v = sqrt(v0^2 + v1^2 + v2^2)   #this is "s" of the book
+scalar l1 = (v2/v1)*(v/v0)
+scalar l2 = (v1/v2)*(v/v0)
+scalar omega1 = (v*v0/v1)*sqrt(1+ (v2/v0)^2)
+scalar omega2 = (v*v0/v2)*sqrt(1+ (v1/v0)^2)
+scalar check = (v0>0) && (v1>0) && (v2>0) 
+params cVec  v0 v1 v2  
+end mle    --verbose
+
+series e2hn = Depv - Regrs*cVec
+scalar v = sqrt(v0^2 + v1^2 + v2^2)
+scalar l1 = (v2/v1)*(v/v0)
+scalar l2 = (v1/v2)*(v/v0)
+scalar omega1 = (v*v0/v1)*sqrt(1+ (v2/v0)^2)
+scalar omega2 = (v*v0/v2)*sqrt(1+ (v1/v0)^2)
+scalar check = (v0>0) && (v1>0) && (v2>0) 
+
+series loglHN = ln(4/sqrt(2*$pi)) -ln(v) - 0.5*(e2hn/v)^2 + ln(cdf(D,l1/sqrt(1+l1^2), e2hn/omega1, 0) - cdf(D,-l2/sqrt(1+l2^2), e2hn/omega2, 0))
+
+
+#Calculating conditional expectations measures for the Semi-log HN spec 
+scalar omegaw = v1*sqrt(v0^2 + v2^2)/v
+scalar omegau = v2*sqrt(v0^2 + v1^2)/v
+series Skewdif = 2*cdf(D,l1/sqrt(1+l1^2), e2hn/omega1, 0) - 2*cdf(D,-l2/sqrt(1+l2^2), e2hn/omega2, 0)
+
+# E[exp(w) | ε]
+series Exp_wpos_HN = 2*(1/Skewdif)*exp(0.5*omegaw^2+(omegaw/omega1)*e2hn)*\
+                 (cnorm((e2hn-v1^2)/(-omega2)) - cdf(D,-v1*v2/(sqrt(v0^2 + v2^2)*sqrt(v0^2 + v1^2)), (e2hn-v1^2)/(-omega2), -omegaw - (e2hn/omega1)))
+
+# E[exp(-w) | ε]
+series Exp_wneg_HN = 2*(1/Skewdif)*exp(0.5*omegaw^2-(omegaw/omega1)*e2hn)*\
+                 (cnorm((e2hn+v1^2)/(-omega2)) - cdf(D,-v1*v2/(sqrt(v0^2 + v2^2)*sqrt(v0^2 + v1^2)), (e2hn+v1^2)/(-omega2), omegaw - (e2hn/omega1)))
+
+# E[exp(u) | ε]
+series Exp_uneg_HN = 2*(1/Skewdif)*exp(0.5*omegau^2 - (omegau/omega2)*e2hn)* \
+                 (cnorm((e2hn+v2^2)/omega1) - cdf(D,-v1*v2/(sqrt(v0^2 + v2^2)*sqrt(v0^2 + v1^2)), (e2hn+v2^2)/omega1, e2hn/omega2 - omegau))
+
+# E[exp(-u) | ε]
+series Exp_uneg_HN = 2*(1/Skewdif)*exp(0.5*omegau^2+(omegau/omega2)*e2hn)* \
+                 (cnorm((e2hn-v2^2)/omega1) - cdf(D,-v1*v2/(sqrt(v0^2 + v2^2)*sqrt(v0^2 + v1^2)), (e2hn-v2^2)/omega1, e2hn/omega2 + omegau))
+
+series PhiDiff_wu = cdf(D,l1/sqrt(1+l1^2), (e2hn + v0^2)/omega1, 0) - cdf(D,-l2/sqrt(1+l2^2), (e2hn + v0^2)/omega2, 0)
+series PhiDiff_uw = cdf(D,l1/sqrt(1+l1^2), (e2hn - v0^2)/omega1, 0) - cdf(D,-l2/sqrt(1+l2^2), (e2hn - v0^2)/omega2, 0)
+
+# E[exp(w-u) | ε]
+series Exp_wu_HN = exp(((v1^2+v2^2)/v^2)*(v0^2/2 + e2hn))*(1/Skewdif) * PhiDiff_wu
+
+# E[exp(u-w) | ε]
+series Exp_uw_HN = exp(((v1^2+v2^2)/v^2)*(v0^2/2 - e2hn))*(1/Skewdif) * PhiDiff_uw
+
+##Now code the M-expressions.
+
+
+
