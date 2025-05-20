@@ -1,0 +1,265 @@
+# 2TSF Management Model - Papadopoulos 2021 paper
+
+set hc_version 2
+
+ols  lsales  const  lppent lemp  --robust #--quiet     
+scalar k1 = $coeff(const)
+scalar k2 = $coeff(lppent )
+scalar k3 = $coeff(lemp)
+
+matrix Depv = {lsales}  
+matrix kVec = {k1,k2,k3}'  
+
+
+#set bfgs_richardson on  
+#set optimizer newton  
+
+####  A.  2TSF Normal-Exponential WITHOUT a Copula   ####
+
+scalar sv = 0.5  #stdev of random disturbance
+scalar sw = 0.5  #stdev of positive one-sided - management
+scalar su = 0.5  #stdev of negative one-sided  - external inefficiency
+
+#This so that the names of the variables appear in the estimation output
+string varblnames = varname(Xlist2TSF)
+string errnames = ",sv,sw,su,"
+string allcoefnames = varblnames ~ errnames
+
+catch mle logl = check ? -ln(sw + su) + ln(f1+f2):NA
+    series res = Depv - lincomb(Xlist2TSF, kVec)
+    # Note: the loglikelihood in the exponential spec does not contain any constant terms
+
+ 
+series a1 = res/su + sv^2/(2*(su^2))
+series b1 = -(res/sv + sv/su)
+series a2 = sv^2/(2*(sw^2))- res/sw
+series b2 = res/sv - sv/sw
+
+series f1 = exp(a1)*cnorm(b1)
+series f2 = exp(a2)*cnorm(b2)
+     
+scalar check = (sv>0) && (sw>0) && (su>0) #&& (kVec[2]+kVec[3] <1)
+
+params kVec sv sw su
+param_names allcoefnames
+end mle #--robust  --verbose --hessian
+
+#matrix MLEvcv = $vcv
+
+
+#conditional measures for the log-log Spec
+series res2TSF = Depv - lincomb(Xlist2TSF, kVec)
+series a1 = res2TSF/su + sv^2/(2*(su^2))
+series b1 = -(res2TSF/sv + sv/su)
+series a2 = sv^2/(2*(sw^2))- res2TSF/sw
+series b2 = res2TSF/sv - sv/sw
+
+series chi1 = cnorm(b2) + exp(a1-a2)*cnorm(b1)
+series chi2 = exp(a2-a1)*chi1
+scalar lambda = 1/sw + 1/su 
+series Eexpwu_NUM = exp((1+su)*(a1+sv^2/(2*su)))*cnorm(b1-sv) + exp((1-sw)*(a2 - sv^2/(2*sw)))*cnorm(b2+sv)
+series Eexpwu_DEN = exp(a1)*cnorm(b1) + exp(a2)*cnorm(b2)
+#expected values
+series Eexpw = (lambda/(lambda-1))*(1/chi2)*(cnorm(b1)+exp(0.5*((b2 + sv)^2 - b1^2))*cnorm(b2+sv))
+series Eexpw_neg = (lambda/(1+lambda))*(1/chi2)*(cnorm(b1)+exp(a2 - a1 - b2*sv + 0.5*(sv^2))*cnorm(b2-sv))
+series Eexpu_neg = (lambda/(1+lambda))*(1/chi1)*(cnorm(b2)+exp(a1 - a2 - b1*sv + 0.5*(sv^2))*cnorm(b1-sv))
+series Eexpwu = Eexpwu_NUM / Eexpwu_DEN
+
+#measures focused for the Papadopoulos 2021 Measuring-Management paper
+series  Mc = 1- Eexpw_neg
+series  Ms = Eexpw
+series  TE = Eexpu_neg
+series  Mm = Eexpwu
+
+
+#relation of management with regressors
+series Ew = 1/lambda + (sv/chi1)*(dnorm(b2)+b2*cnorm(b2))
+scalar corrwK = corr(Ew,exp(lppent))
+scalar corrwL = corr(Ew,exp(lemp))
+
+
+####   B. 2TSF Exponential WITH COPULA   ####
+
+#Preparation of Copula variables
+series capCupPhi = invcdf(N,(1/($nobs+1))*ranking(lppent))
+series labCupPhi = invcdf(N,(1/($nobs+1))*ranking(lemp))
+
+#After graphing and testing the above two series, we conclude that they behave like Normals,
+#so we can use the Copula likelihood for continuus regressors.
+
+ols  lsales  const  lppent lemp   --quiet     
+scalar k1 = $coeff(const)
+scalar k2 = $coeff(lppent )
+scalar k3 = $coeff(lemp)
+
+matrix kVec = {k1,k2,k3}'  
+matrix Depv = {lsales} 
+
+#set bfgs_richardson on  
+#set optimizer newton  
+
+set hc_version 2
+
+scalar rho12 = corr(capCupPhi,labCupPhi)
+scalar rho1e = 0.5
+scalar rho2e = 0.5
+
+scalar sv = 0.5  #stdev of random disturbance
+scalar sw = 0.5 #stdev of positive one-sided
+scalar su = 0.5  #stdev of negative one-sided
+
+#This so that the names of the variables appear in the estimation output
+string varblnames = varname(Xlist2TSF)
+string errnames = ",sv,sw,su,rho1e,rho2e"
+string allcoefnames = varblnames ~ errnames
+
+
+catch mle logl = check ? -0.5*ldet(R3) -0.5*qRq + 0.5*((invcdf(N,CDF))^2) -ln(sw + su) + ln(f1+f2) : NA
+    series res = Depv - lincomb(Xlist2TSF, kVec)
+    
+    
+series a1 = res/su + sv^2/(2*(su^2))
+series b1 = -(res/sv + sv/su)
+series a2 = sv^2/(2*(sw^2))- res/sw
+series b2 = res/sv - sv/sw
+
+series f1 = exp(a1)*cnorm(b1)
+series f2 = exp(a2)*cnorm(b2)
+    
+    #related to the copula
+    
+    series CDF = cnorm(res/sv) +(su/(sw+su))*f1 - (sw/(sw+su))*f2
+
+    matrix R3 = {1,rho12,rho1e; rho12,1,rho2e; rho1e, rho2e,1}
+
+    matrix q = {capCupPhi,labCupPhi,invcdf(N,CDF)}
+    matrix qR = q*inv(R3)
+    series qRq = sumr(q.*qR)
+    
+    scalar check = (sv>0) && (sw>0) && (su>0)  && (abs(rho1e)<1) && (abs(rho2e)<1) && (kVec[2]+kVec[3] <1)
+params kVec sv sw su rho1e rho2e
+param_names allcoefnames
+end mle  #--robust #--verbose     --hessian  
+
+#matrix MLEvcvCop = $vcv
+#print MLEvcvCop
+
+
+
+#conditional measures for the log-log Spec
+series res2TSFcop = Depv - lincomb(Xlist2TSF, kVec)
+series a1 = res2TSFcop/su + sv^2/(2*(su^2))
+series b1 = -(res2TSFcop/sv + sv/su)
+series a2 = sv^2/(2*(sw^2))- res2TSFcop/sw
+series b2 = res2TSFcop/sv - sv/sw
+
+series chi1 = cnorm(b2) + exp(a1-a2)*cnorm(b1)
+series chi2 = exp(a2-a1)*chi1
+scalar lambda = 1/sw + 1/su 
+series Eexpwu_NUM = exp((1+su)*(a1+sv^2/(2*su)))*cnorm(b1-sv) + exp((1-sw)*(a2 - sv^2/(2*sw)))*cnorm(b2+sv)
+series Eexpwu_DEN = exp(a1)*cnorm(b1) + exp(a2)*cnorm(b2)
+#expected values
+series Eexpw = (lambda/(lambda-1))*(1/chi2)*(cnorm(b1)+exp(0.5*((b2 + sv)^2 - b1^2))*cnorm(b2+sv))
+series Eexpw_neg = (lambda/(1+lambda))*(1/chi2)*(cnorm(b1)+exp(a2 - a1 - b2*sv + 0.5*(sv^2))*cnorm(b2-sv))
+series Eexpu_neg = (lambda/(1+lambda))*(1/chi1)*(cnorm(b2)+exp(a1 - a2 - b1*sv + 0.5*(sv^2))*cnorm(b1-sv))
+series Eexpwu = Eexpwu_NUM / Eexpwu_DEN
+
+#measures focused for the Papadopoulos 2021 Measuring-Management paper
+series  McCop = 1- Eexpw_neg
+series  MsCop = Eexpw
+series  TECop = Eexpu_neg
+series  MmCop = Eexpwu
+
+
+#relation of management with regressors
+series EwCop = 1/lambda + (sv/chi1)*(dnorm(b2)+b2*cnorm(b2))
+scalar corrwKCop = corr(EwCop,exp(lppent))
+scalar corrwLCop = corr(EwCop,exp(lemp))
+
+
+
+########################################
+#Stratfying the sample per BVRA mng score
+series BVRAcat = 0
+loop  i=1..1888 --quiet
+    if management[i] > 3.999
+        BVRAcat[i] = 4
+    elif management[i] >2.999
+            BVRAcat[i]=3
+        elif management[i] >1.999
+                BVRAcat[i] =2
+            else
+                BVRAcat[i]=1
+            endif
+        endloop
+        
+
+
+#Stratfying the sample per Mc 
+series Mccat = 0
+loop  i=1..1888 --quiet
+    if McCop[i] > 0.8
+        Mccat[i] = 5
+    elif McCop[i] >0.6
+            Mccat[i]=4
+        elif McCop[i] >0.4
+            Mccat[i] =3
+            elif McCop[i] >0.2
+                Mccat[i] =2
+                else
+                Mccat[i]=1
+            endif
+        endloop
+        
+
+#Stratfying the sample per Mm 
+series Mmcat = 0
+loop  i=1..1888 --quiet
+    if MmCop[i] > 3.0
+        Mmcat[i] = 7
+    elif MmCop[i] > 2.5
+            Mmcat[i]=6
+        elif MmCop[i] > 2.0
+        Mmcat[i] = 5
+    elif MmCop[i] > 1.5
+            Mmcat[i]=4
+        elif MmCop[i] > 1.0
+            Mmcat[i] =3
+            elif MmCop[i] > 0.5
+                Mmcat[i] =2
+                else
+                Mmcat[i]=1
+            endif
+        endloop
+        
+
+        
+        #SME status
+        series SME = (headcount <251) 
+
+##################################################
+#Correlation between management E(w|ε) and VBRA management
+PCorrMM = corr(Ew,management)
+KtauMM = npcorr(Ew,management,kendall)
+SrhoMM = npcorr(Ew,management,spearman)
+
+print PCorrMM KtauMM SrhoMM
+
+#Correlation between management E(w|ε) and VBRA management standardized to (0,1)
+PCorrMMstd = corr(Ewstd,mBstd)
+KtauMMstd = npcorr(Ewstd,mBstd,kendall)
+SrhoMMstd = npcorr(Ewstd,mBstd,spearman)
+
+print PCorrMMstd KtauMMstd SrhoMMstd
+##
+
+
+
+
+
+ 
+
+
+
+
+
