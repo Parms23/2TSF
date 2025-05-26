@@ -1,0 +1,143 @@
+#Greek data sampoe sector 551-Hotels and similar accomodation
+#code for 2TSF Exponential Tug-of-War model with Copula for regressor endogeneity
+#FOR YEAR 2019
+
+
+#Create the Current Assets series
+series lagCA = lagk2 + lagk3
+
+#Create the Funding control variable over the whole sample
+series lagfinLong = (lagf1 + lagf2 + lagf3) / lagf5
+
+#create the log-variables
+
+series l_va = log(va)
+series l_lagk1 =log(lagk1)
+series l_lagCA = log (lagk2 + lagk3)
+series l_h_interp = log(h_interp)
+
+#restrict to obs with all values available
+smpl --no-missing l_va l_lagk1 l_lagCA l_h_interp c1 c2 lagfinLong
+
+
+scalar obsn = $nobs  #effective sample size
+
+#Check consistency of data (Balance Sheet Identity) on the selected sample
+series BSsanity = lagk1+lagk2+lagk3-lagf5
+
+
+
+############### Descriptives: Contigency TABLE hEADCOUNT and K/L RATIO ###################
+series KLratio = lagf5 /(1000*h_interp)
+
+series h10_KL_100 = (h_interp<10)*(KLratio < 100)
+series h10_KL_200 = (h_interp<10)*(KLratio >= 100 && KLratio <200)
+series h10_KL_201 = (h_interp<10)*(KLratio >= 200)
+series h50_KL_100 = (h_interp>=10 && h_interp <50)*(KLratio <100)
+series h50_KL_200 = (h_interp>=10 && h_interp <50)*(KLratio >= 100 && KLratio < 200)
+series h50_KL_201 = (h_interp>=10 && h_interp <50)*(KLratio >= 200)
+series h51_KL_100 = (h_interp>=50)*(KLratio<100)
+series h51_KL_200 = (h_interp>=50)*(KLratio >= 100 && KLratio < 200)
+series h51_KL_201 = (h_interp>=50)*(KLratio >= 200)
+
+matrix SampleComp = zeros(3,3)
+
+matrix SampleComp[1,1] = sum(h10_KL_100)
+matrix SampleComp[1,2] = sum(h10_KL_200)
+matrix SampleComp[1,3] = sum(h10_KL_201)
+matrix SampleComp[2,1] = sum(h50_KL_100)
+matrix SampleComp[2,2] = sum(h50_KL_200)
+matrix SampleComp[2,3] = sum(h50_KL_201)
+matrix SampleComp[3,1] = sum(h51_KL_100)
+matrix SampleComp[3,2] = sum(h51_KL_200)
+matrix SampleComp[3,3] = sum(h51_KL_201)
+
+###########  TRANSLOG production function specification  ##################
+
+#center around geometric mean (i.e. sample mean of logarithms)
+series y19c_l_va = l_va - mean(l_va)
+series y19c_l_lagk1 = l_lagk1 - mean(l_lagk1)
+series y19c_l_lagCA = l_lagCA - mean(l_lagCA)
+series y19c_l_h_interp = l_h_interp - mean(l_h_interp)
+ 
+#halfsquares and interaction terms
+series y19_F_sq = 0.5*(y19c_l_lagk1)^2
+series y19_C_sq = 0.5*(y19c_l_lagCA)^2
+series y19_l_h_interp_sq = 0.5*(y19c_l_h_interp)^2
+
+series y19_FC = y19c_l_lagk1*y19c_l_lagCA
+series y19_Fh = y19c_l_lagk1*y19c_l_h_interp
+series y19_Ch = y19c_l_lagCA*y19c_l_h_interp
+
+
+##########  2TSF Tug-of-War model with Copula #######
+series Depvar = y19c_l_va
+
+#ols for starting values of betas
+ols Depvar y19RegList --quiet
+
+matrix bcoeff = $coeff
+
+#function to obtain rankings without subtracting half of ties
+function series rankingalt(series X)
+    matrix a = aggregate(const, X)
+    matrix b = cum(a[,2])
+    return replace(X, a[,1], b)
+end function
+
+#create the series needed for the copula component (endogenous regressor: labor headcount)
+series y19_h_CupPhi = invcdf(N,(1/(obsn+1))*rankingalt(y19c_l_h_interp))  
+
+#starting values of distribution coefficients
+scalar sw = 0.5 #stdev of positive one-sided
+scalar su = 0.5  #stdev of negative one-sided
+ 
+scalar rho1e = -0.5  #dependence parameter for the Copula component
+
+string varblnames = varname(y19RegList)
+string errnames = ",sw,su,rho1e"
+string allcoefnames = varblnames ~ errnames
+
+set max_verbose full
+
+catch mle logl = check ? -0.5*ldet(R2) -0.5*qRq + 0.5*((invcdf(N,CDF))^2) + logdensAL : NA
+series res = Depvar - lincomb(y19RegList,bcoeff) + (sw - su) #we add the error mean because the data are centered
+    
+series logdensAL =  -ln(sw+su) + (res<=0)*(res/su) - (res>0)*(res/sw)
+
+#related to the copula
+
+   series CDFraw = (res<=0)*(su/(sw+su))*exp(res/su) + (res>0)* (1-(sw/(sw+su))*exp(-res/sw))  #cdf of Asym Laplace
+   list cdflist = CDFraw bound
+   series CDF = min(cdflist)
+
+    matrix R2 = {1,rho1e; rho1e, 1}
+
+    matrix q = {y19_h_CupPhi, invcdf(N,CDF)}
+    matrix qR = q*inv(R2)
+    series qRq = sumr(q.*qR)
+    
+    scalar check =  (sw>0) && (su>0)  && (abs(rho1e)<1)  #(sv>0) &&
+params bcoeff sw su rho1e  #sv 
+param_names allcoefnames
+end mle   --robust --verbose  --hessian  
+
+
+series y19resCopMLE = Depvar - lincomb(y19RegList,bcoeff)   #residuals from mle estimation 
+
+
+#####check Constant Returns to Scale conditions #########
+scalar betasum = bcoeff[1,1] + bcoeff[2,1] + bcoeff[3,1]
+scalar alpha1sum = bcoeff[4,1] + bcoeff[7,1] + bcoeff[8,1]
+scalar alpha2sum = bcoeff[7,1] + bcoeff[5,1] + bcoeff[9,1]
+scalar alpha3sum = bcoeff[8,1] + bcoeff[9,1] + bcoeff[6,1]
+
+print betasum alpha1sum alpha2sum alpha3sum 
+
+#####Output Elasticity series ###########
+series elast_F = bcoeff[1,1]   + bcoeff[4,1]*y19c_l_lagk1 + bcoeff[7,1]*y19c_l_lagCA + bcoeff[8,1]*y19c_l_h_interp
+series elast_C = bcoeff[2,1]   + bcoeff[5,1]*y19c_l_lagCA + bcoeff[7,1]*y19c_l_lagk1 + bcoeff[9,1]*y19c_l_h_interp
+series elast_h = bcoeff[3,1]   + bcoeff[6,1]*y19c_l_h_interp + bcoeff[8,1]*y19c_l_lagk1 + bcoeff[9,1]*y19c_l_lagCA
+
+
+

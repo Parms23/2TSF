@@ -1,0 +1,41 @@
+Sector,secID,mng2008,mng2019,inef2008,inef2019,eff2008,eff2019
+"Processing and preserving of meat and production of meat prod","secid-101",1.276,1.319,0.222,0.279,0.993,0.951
+"Processing and preserving of fruit and vegetables","secid-103",1.37068354617764,1.48752192235433,0.22263500303561,0.375381407727906,1.06552141071352,0.929133849114841
+"Manufacture of dairy products","secid-105",1.53,1.245,0.243,0.355,1.158,0.803
+"Manufacture of bakery and farinaceous products","secid-107",1.12082492714638,1.40459893784228,0.245614948290677,0.226087656407685,0.84553357062242,1.0870364557928
+"Manufacture of other food products","secid-108",1.153,1.416,0.193,0.292,0.93,1.003
+"Manufacture of beverages","secid-110",1.115,1.369,0.396,0.347,0.674,0.894
+"Manufacture of wearing apparel, except fur apparel","secid-141",1.188,1.797,0.211,0.21,0.937,1.42
+"Manufacture of articles of paper and paperboard","secid-172",1.245,1.352,0.201,0.209,0.995,1.07
+"Printing and service activities related to printing","secid-181",1.348,1.357,0.208,0.313,1.068,0.932
+"Manufacture of plastic products","secid-222",1.153,1.38,0.28,0.2,0.83,1.105
+"Manufacture of articles of concrete, cement and plaster","secid-236",1.359,1.631,0.295,0.345,0.959,1.069
+"Manufacture of structural metal products","secid-251",1.316,1.497,0.208,0.35,1.043,0.973
+"Manufacture of other fabricated metal products","secid-259",1.248,1.364,0.235,0.209,0.955,1.078
+"Manufacture of furniture","secid-310",1.178,1.519,0.294,0.267,0.831,1.114
+"Construction of residential and non-residential buildings","secid-412",2.282,2.498,0.435,0.515,1.29,1.212
+"Construction of roads and railways","secid-421",1.389,1.38,0.316,0.433,0.949,0.782
+"Electrical, plumbing and other construction installation acti","secid-432",2.924,1.569,0.335,0.361,1.945,1.002
+"Sale of motor vehicles","secid-451",1.231,1.464,0.256,0.344,0.915,0.96
+"Sale of motor vehicle parts and accessories","secid-453",1.173,1.302,0.223,0.406,0.912,0.774
+"Wholesale on a fee or contract basis","secid-461",1.101,1.833,0.48,0.32,0.573,1.247
+"Wholesale of food, beverages and tobacco","secid-463",1.352,1.409,0.278,0.352,0.976,0.913
+"Wholesale of household goods","secid-464",1.46835115911641,1.50117241565663,0.290802775797936,0.366342656545047,1.04135056619924,0.951228924972834
+"Wholesale of information and communication equipment","secid-465",1.414,1.476,0.236,0.278,1.08,1.066
+"Wholesale of other machinery, equipment and supplies","secid-466",1.374,1.61,0.285,0.322,0.983,1.091
+"Other specialised wholesale","secid-467",1.398,1.459,0.301,0.385,0.976,0.897
+"Non-specialised wholesale trade","secid-469",1.279,1.347,0.256,0.332,0.951,0.9
+"Retail sale in non-specialised stores","secid-471",1.218,1.323,0.185,0.208,0.993,1.048
+"Retail sale of other household equipment in specialised store","secid-475",1.454,1.516,0.255,0.348,1.084,0.988
+"Retail sale of other goods in specialised stores","secid-477",1.728,1.537,0.268,0.401,1.264,0.921
+"Freight transport by road and removal services","secid-494",1.348,1.383,0.252,0.416,1.008,0.807
+"Support activities for transportation","secid-522",1.4,1.331,0.363,0.363,0.893,0.848
+"Hotels and similar accommodation","secid-551",1.29350041909414,1.38976328162024,0.418003367432516,0.454120760497121,0.752812888137416,0.758642923259883
+"Restaurants and mobile food service activities","secid-561",1.267,1.803,0.301,0.362,0.886,1.149
+"Publishing of books, periodicals and other publishing activit","secid-581",1.594,1.25,0.259,0.378,1.181,0.778
+"Computer programming, consultancy and related activities","secid-620",1.389,1.408,0.316,0.337,0.95,0.934
+"Rental and operating of own or leased real estate","secid-682",1.585,1.781,0.506,0.512,0.784,0.869
+"Management consultancy activities","secid-702",1.414,1.584,0.256,0.406,1.052,0.941
+"Architectural and engineering activities and related technica","secid-711",1.436,2.264,0.366,0.408,0.91,1.341
+"Advertising","secid-731",1.556,1.246,0.253,0.466,1.162,0.666
+"Travel agency and tour operator activities","secid-791",1.317,1.58,0.333,0.371,0.879,0.994
