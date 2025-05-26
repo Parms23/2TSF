@@ -1,0 +1,74 @@
+# Two-tier Stochastic Frontier model - Exponential Specification - MLE and JLMS measures
+
+
+series Depvar = lnhqd  #input the dependent variable
+list Xlist =  RegrList_high#   input the list of regressors
+
+smpl --no-missing Depvar Xlist
+
+ols Depvar Xlist --quiet
+matrix bcoef = $coeff
+
+scalar sv = 0.5
+scalar sw = 0.5
+scalar su = 0.7
+
+set max_verbose full
+set bfgs_richardson off #on #off
+#This so that the names of the variables appear in the estimation output
+string varblnames = varname(Xlist)
+string errnames = ",sigmav,sigmaw,sigmau"
+string allcoefnames = varblnames ~ errnames
+
+mle logl = check ? -log(sw + su) + log(exp(a1)*cnorm(b1) + exp(a2)*cnorm(b2)):NA
+    series res = Depvar - lincomb(Xlist, bcoef)
+    # Note: the loglikelihood in the exponential spec does not contain any constant terms
+
+series a1 = sv^2/(2*su^2) + res/su
+series b1 = -res/sv - sv/su
+series a2 = sv^2/(2*sw^2) - res/sw 
+series b2 = res/sv - sv/sw
+
+
+scalar check = (sv>0) && (sw>0) && (su>0)
+params bcoef sv sw su
+param_names allcoefnames
+end mle   --robust --verbose  
+
+series resid = Depvar - lincomb(Xlist, bcoef)
+series a1 = sv^2/(2*su^2) + resid/su
+series b1 = -resid/sv - sv/su
+series a2 = sv^2/(2*sw^2) - resid/sw 
+series b2 = resid/sv - sv/sw
+
+series loglExp = -ln(sw + su) + ln(exp(a1)*cnorm(b1) + exp(a2)*cnorm(b2))
+
+#Calculating conditional measures for the Semi-log Exp spec
+
+series chi1 = cnorm(b2) + exp(a1-a2)*cnorm(b1)
+series chi2 = exp(a2-a1)*chi1
+scalar lambda = 1/sw + 1/su
+
+#conditional measures when the dep var is in logs
+series Exp_w_pos = (lambda/(lambda-1))*(1/chi2)*(cnorm(b1)+exp(0.5*((b2 + sv)^2 - b1^2))*cnorm(b2+sv))
+series Exp_w_neg = (lambda/(1+lambda))*(1/chi2)*(cnorm(b1)+exp(a2 - a1 - b2*sv + 0.5*(sv^2))*cnorm(b2-sv))
+series Exp_u_pos = (lambda/(lambda-1))*(1/chi1)*(cnorm(b2)+exp(0.5*((b1 + sv)^2 - b2^2))*cnorm(b1+sv))
+series Exp_u_neg = (lambda/(1+lambda))*(1/chi1)*(cnorm(b2)+exp(a1 - a2 - b1*sv + 0.5*(sv^2))*cnorm(b1-sv))
+series ExpDens2tsf = (1/(sw+su))* (exp(a1)*cnorm(b1) + exp(a2)*cnorm(b2))
+series Exp_wu = (exp( (1+su)*(a1+sv^2/(2*su)))*cnorm(b1-sv) + exp( (1-sw)*(a2-sv^2/(2*sw)))*cnorm(b2+sv)) / ((sw+su)*ExpDens2tsf)
+series Exp_uw = (exp( (1-su)*(a1-sv^2/(2*su)))*cnorm(b1+sv) + exp( (1+sw)*(a2+sv^2/(2*sw)))*cnorm(b2-sv)) / ((sw+su)*ExpDens2tsf)
+
+series M1 = 1-Exp_w_neg  #Relative contribution in Y of positive force w
+series M2 = Exp_u_pos - 1 #Relative loss in Y due to negative force u
+series M3 = Exp_wu    #Relative strength of w compared to u
+series M4 = Exp_w_pos - Exp_u_neg #Volatility of Y_B due to w, u
+series M5 = Exp_w_pos - 1  #Counterfactual markup effect of w on Y_B. Equal to M9
+series M6 = 1- Exp_u_neg #Counterfactual markdown effect of u on Y_B. Equal to M8
+series M7 = Exp_wu - 1 #Net effect on balanced outcome Y_B
+#M8 and M9 are identical to previous ones in the log-depvar case
+series M10 = 1- Exp_uw  #Gain as a percentage of Y-actual
+
+##
+
+
+
