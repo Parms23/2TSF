@@ -1,0 +1,102 @@
+#### 2TSF Binary Response Random Tretament Effects (BR RTE) #####
+#### Data is artificial ####
+
+series depvar = RA_f
+list RegrList = RegrList_f
+ols  depvar  RegrList    --quiet     
+matrix gammaVec = $coeff 
+scalar sw = 0.5 #stdev of positive one-sided   
+scalar su = 0.5  #stdev of negative one-sided  
+#scalar sv = 0.5  #stdev of random disturbance  under estimation as usual 
+scalar sv = 1  #stdev of random disturbance  FIXED to 1, per Identification argument
+ 
+string varblnames = varname(RegrList)      
+#string errnames = ",sv,sw,su" #   When sv is under estimation
+string errnames = ",sw,su" #   When sv is FIXED TO UNITY
+
+string allcoefnames = varblnames ~ errnames  
+set bfgs_richardson on
+set hc_version 3
+set max_verbose full
+scalar SMALL = 1.0e-12
+scalar BIG =  10
+catch mle logl = check ? log(PMFU + HHC_f*ExtraT) : NA
+    series xb = lincomb(RegrList,gammaVec)  
+    
+     
+    scalar c1 = su/(sw + su)
+    scalar c2 = sw/(sw + su)
+    
+    series a1 = sv^2/(2*su^2) -  xb/su 
+    series a2 = sv^2/(2*sw^2) +  xb/sw  
+     
+    series B1 = 1- depvar - cnorm((2*depvar-1)*(xb/sv - sv/su))
+    series B2 = depvar - cnorm((2*depvar-1)*(xb/sv + sv/sw))
+     
+    series ExtraT = c1*exp(a1)*B1 + c2*exp(a2)*B2
+    series PMFU = cnorm((2*depvar-1)*xb/sv) 
+    
+    scalar check = (sw>0) && (su>0) && (min(PMFU + ExtraT) > SMALL) && (abs(max(a1))<=BIG) && (abs(max(a2))<=BIG)
+     
+    params gammaVec  sw su # sv
+    param_names allcoefnames    
+end mle  --robust   #--hessian  -verbose
+
+matrix MLEvcv = $vcv
+print MLEvcv
+
+#Compute basic quantities  for y=1
+    series xbEst = lincomb(RegrList,gammaVec)
+    scalar cw = sw/(sw + su)
+    scalar cu = su/(sw + su)
+    
+       series aw = sv^2/(2*sw^2) +  xbEst/sw #sv is fixed to 1
+       series au = sv^2/(2*su^2) -  xbEst/su 
+    
+    series Dw = cw*exp(aw)* cnorm(-xbEst/sv - sv/sw)
+    series Du = cu* exp(au)* cnorm(xbEst/sv - sv/su)
+     
+    obsn3 = $nobs
+    scalar n_1 = sum(HHC_f)
+    scalar n_0 = obsn3 - n_1
+
+    series Prob_U = (1-HHS_f)*cnorm(xbEst)
+    scalar APU = (1/n_0)*sum(Prob_U)
+    
+    series Prob_T = HHC_f*(cnorm(xbEst)+Dw-Du)
+    scalar APT = (1/n_1)*sum(Prob_T)
+    
+    series ExPpr = HHC_f*cnorm(xbEst)
+    scalar AExPpr = (1/n_1)*sum(ExPpr) - APU
+    
+    scalar AExPpost = APT - APU
+    
+    series ATT_S = HHC_f*(Dw-Du)
+    scalar ATT = (1/n_1)*sum(ATT_S)
+    
+    
+    ###general prediction ###
+    series Prob_1S = cnorm(xbEst) + HHC_f*(Dw-Du)
+    series Pred_RA = (Prob_1S > 0.5)
+    
+    
+    
+    ##### Marginal effects   #####
+    series MarEf_fac_U = (1-HHC_f)*dnorm(xbEst)
+    series MarEf_fac_T = HHC_f*( (1/sw)*Dw + (1/su)*Du)
+    
+    scalar meanMarEf_fac_U = (1/n_0)*sum(MarEf_fac_U)
+    scalar meanMarEf_fac_T = (1/n_1)*sum(MarEf_fac_T)
+    
+    matrix MarEf_U = meanMarEf_fac_U*gammaVec
+    matrix MarEf_T = meanMarEf_fac_T*gammaVec
+
+    series Mar_Ef_sw = 1/(sw*(sw+su)) * ( (su - 1/sw- xbEst)*Dw + sw*Du + dnorm(xbEst) )
+    series Mar_Ef_su = -1/(su*(sw+su)) * ( su*Dw + (sw - 1/su + xbEst)*Du + dnorm(xbEst) )
+    
+    series Mar_Ef_sw_010 = 1/(sw*(sw+su)) * ( (su - 1/sw- xbEst)*Dw + sw*Du + dnorm(xbEst) )*0.1
+    series Mar_Ef_su_010 = -1/(su*(sw+su)) * ( su*Dw + (sw - 1/su + xbEst)*Du + dnorm(xbEst) )*0.1
+    
+    series Net_marg_swsu_010 = Mar_Ef_sw_010 + Mar_Ef_su_010
+
+##
